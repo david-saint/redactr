@@ -29,3 +29,6 @@ src/lib/wasm/pkg
 
 # Playwright
 .playwright-mcp
+
+# Vitest
+coverage

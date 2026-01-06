@@ -17,23 +17,23 @@ Redactr is a privacy-focused, browser-local image redaction PWA. All image proce
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Development server
-npm run dev
+pnpm run dev
 
 # Build WASM module (requires wasm-pack)
-npm run wasm:build        # Release build
-npm run wasm:dev          # Debug build
+pnpm run wasm:build        # Release build
+pnpm run wasm:dev          # Debug build
 
 # Type check
-npm run check
+pnpm run check
 
 # Production build (builds WASM first)
-npm run build
+pnpm run build
 
 # Preview production build
-npm run preview
+pnpm run preview
 ```
 
 ## Prerequisites
@@ -63,27 +63,32 @@ wasm/
 ## Key Patterns
 
 ### State Management
+
 - `imageStore`: Original and current image data (ImageData objects)
 - `historyStore`: Command pattern for undo/redo - stores redaction operations, not full image copies
 - `settingsStore`: Active tool, redaction style, intensity, brush size, fill color
 - `theme`: Light/dark/system preference with localStorage persistence
 
 ### WASM Integration
+
 The WASM module exports functions that mutate `Uint8ClampedArray` in place:
+
 - `solid_fill()`, `pixelate()`, `gaussian_blur()` for rectangle regions
 - `brush_solid_fill()`, `brush_pixelate()` for freehand strokes
 
 TypeScript wrapper (`src/lib/wasm/redactor.ts`) handles initialization and provides typed interface.
 
 ### Canvas Rendering
+
 Two-layer canvas system:
+
 - Base canvas: displays current image state
 - Overlay canvas: selection UI, brush preview (cleared on each render)
 
 ## Redaction Styles
 
-| Style | Parameter | Range |
-|-------|-----------|-------|
-| Solid | fillColor | Hex color |
-| Pixelate | intensity → blockSize | 4-32px |
-| Blur | intensity → radius | 2-20px |
+| Style    | Parameter             | Range     |
+| -------- | --------------------- | --------- |
+| Solid    | fillColor             | Hex color |
+| Pixelate | intensity → blockSize | 4-32px    |
+| Blur     | intensity → radius    | 2-20px    |

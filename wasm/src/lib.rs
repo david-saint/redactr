@@ -381,3 +381,279 @@ pub fn brush_pixelate(
         by += block_size;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_image(width: u32, height: u32) -> Vec<u8> {
+        let size = (width * height * 4) as usize;
+        let mut data = vec![0u8; size];
+        // Fill with a pattern for testing
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                data[idx] = (x % 256) as u8;     // R
+                data[idx + 1] = (y % 256) as u8; // G
+                data[idx + 2] = 128;             // B
+                data[idx + 3] = 255;             // A
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn test_solid_fill_basic() {
+        let mut data = create_test_image(10, 10);
+        
+        solid_fill(&mut data, 10, 10, 2, 2, 3, 3, 255, 0, 0);
+        
+        // Check that pixels inside the region are filled
+        for y in 2..5 {
+            for x in 2..5 {
+                let idx = ((y * 10 + x) * 4) as usize;
+                assert_eq!(data[idx], 255, "Red channel at ({}, {})", x, y);
+                assert_eq!(data[idx + 1], 0, "Green channel at ({}, {})", x, y);
+                assert_eq!(data[idx + 2], 0, "Blue channel at ({}, {})", x, y);
+            }
+        }
+        
+        // Check that pixels outside are not affected
+        let idx = (0 * 10 + 0) * 4;
+        assert_eq!(data[idx as usize], 0); // Original R value
+    }
+
+    #[test]
+    fn test_solid_fill_clamps_to_bounds() {
+        let mut data = create_test_image(10, 10);
+        
+        // Try to fill beyond image bounds
+        solid_fill(&mut data, 10, 10, 8, 8, 5, 5, 128, 128, 128);
+        
+        // Only 8-9, 8-9 should be affected (2x2 area)
+        for y in 8..10 {
+            for x in 8..10 {
+                let idx = ((y * 10 + x) * 4) as usize;
+                assert_eq!(data[idx], 128);
+            }
+        }
+    }
+
+    #[test]
+    fn test_solid_fill_preserves_alpha() {
+        let mut data = create_test_image(10, 10);
+        
+        // Set a custom alpha value
+        data[0 * 4 + 3] = 100;
+        
+        solid_fill(&mut data, 10, 10, 0, 0, 1, 1, 255, 255, 255);
+        
+        // Alpha should be preserved
+        assert_eq!(data[0 * 4 + 3], 100);
+    }
+
+    #[test]
+    fn test_pixelate_basic() {
+        let mut data = create_test_image(10, 10);
+        
+        // Fill with known values for predictable averaging
+        for i in 0..data.len() {
+            data[i] = 100;
+        }
+        
+        pixelate(&mut data, 10, 10, 0, 0, 4, 4, 2);
+        
+        // All pixels in the 4x4 region should have the same averaged color
+        let first_r = data[0];
+        let first_g = data[1];
+        let first_b = data[2];
+        
+        for y in 0..4 {
+            for x in 0..4 {
+                let idx = ((y * 10 + x) * 4) as usize;
+                assert_eq!(data[idx], first_r);
+                assert_eq!(data[idx + 1], first_g);
+                assert_eq!(data[idx + 2], first_b);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pixelate_block_size_one_no_change() {
+        let original = create_test_image(10, 10);
+        let mut data = original.clone();
+        
+        pixelate(&mut data, 10, 10, 0, 0, 10, 10, 1);
+        
+        // With block_size=1, each pixel is its own block, so no change
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_pixelate_clamps_block_size() {
+        let mut data = create_test_image(10, 10);
+        
+        // Block size 0 should be treated as 1
+        pixelate(&mut data, 10, 10, 0, 0, 4, 4, 0);
+        
+        // Should not panic or produce invalid data
+        assert_eq!(data.len(), 400);
+    }
+
+    #[test]
+    fn test_gaussian_blur_zero_radius() {
+        let original = create_test_image(10, 10);
+        let mut data = original.clone();
+        
+        gaussian_blur(&mut data, 10, 10, 0, 0, 10, 10, 0);
+        
+        // Zero radius should do nothing
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_gaussian_blur_basic() {
+        let mut data = create_test_image(20, 20);
+        
+        // Put a bright spot in the center
+        for y in 8..12 {
+            for x in 8..12 {
+                let idx = ((y * 20 + x) * 4) as usize;
+                data[idx] = 255;
+                data[idx + 1] = 255;
+                data[idx + 2] = 255;
+            }
+        }
+        
+        gaussian_blur(&mut data, 20, 20, 5, 5, 10, 10, 2);
+        
+        // The bright spot should be blurred (values < 255 in the region)
+        // Just verify no panic and reasonable output
+        assert_eq!(data.len(), 1600);
+    }
+
+    #[test]
+    fn test_generate_gaussian_kernel() {
+        let kernel = generate_gaussian_kernel(2);
+        
+        // Kernel size should be 2*radius + 1 = 5
+        assert_eq!(kernel.len(), 5);
+        
+        // Center should be the largest value
+        let center_idx = 2;
+        for (i, &val) in kernel.iter().enumerate() {
+            if i != center_idx {
+                assert!(kernel[center_idx] >= val);
+            }
+        }
+        
+        // Kernel should be symmetric
+        assert!((kernel[0] - kernel[4]).abs() < 0.0001);
+        assert!((kernel[1] - kernel[3]).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_brush_solid_fill_basic() {
+        let mut data = create_test_image(20, 20);
+        
+        let points = vec![10.0, 10.0];
+        brush_solid_fill(&mut data, 20, 20, &points, 4, 255, 0, 0);
+        
+        // Center should be filled
+        let center_idx = (10 * 20 + 10) * 4;
+        assert_eq!(data[center_idx as usize], 255);
+        assert_eq!(data[center_idx as usize + 1], 0);
+        assert_eq!(data[center_idx as usize + 2], 0);
+    }
+
+    #[test]
+    fn test_brush_solid_fill_circular() {
+        let mut data = vec![0u8; 100 * 100 * 4];
+        
+        let points = vec![50.0, 50.0];
+        brush_solid_fill(&mut data, 100, 100, &points, 10, 255, 255, 255);
+        
+        // Check that the fill is approximately circular
+        // Center should be filled
+        let center_idx = (50 * 100 + 50) * 4;
+        assert_eq!(data[center_idx as usize], 255);
+        
+        // Far corner should not be filled
+        let corner_idx = (0 * 100 + 0) * 4;
+        assert_eq!(data[corner_idx as usize], 0);
+    }
+
+    #[test]
+    fn test_brush_solid_fill_multiple_points() {
+        let mut data = vec![0u8; 50 * 50 * 4];
+        
+        let points = vec![10.0, 10.0, 20.0, 10.0, 30.0, 10.0];
+        brush_solid_fill(&mut data, 50, 50, &points, 4, 128, 128, 128);
+        
+        // All three points should be filled
+        for x in [10, 20, 30] {
+            let idx = (10 * 50 + x) * 4;
+            assert_eq!(data[idx as usize], 128);
+        }
+    }
+
+    #[test]
+    fn test_brush_solid_fill_empty_points() {
+        let original = create_test_image(10, 10);
+        let mut data = original.clone();
+        
+        let points: Vec<f32> = vec![];
+        brush_solid_fill(&mut data, 10, 10, &points, 4, 255, 0, 0);
+        
+        // No change with empty points
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_brush_solid_fill_odd_points_count() {
+        let mut data = vec![0u8; 50 * 50 * 4];
+        
+        // Odd number of points (last one should be ignored)
+        let points = vec![10.0, 10.0, 20.0];
+        brush_solid_fill(&mut data, 50, 50, &points, 4, 255, 0, 0);
+        
+        // First point should still be processed
+        let idx = (10 * 50 + 10) * 4;
+        assert_eq!(data[idx as usize], 255);
+    }
+
+    #[test]
+    fn test_brush_pixelate_basic() {
+        let mut data = create_test_image(50, 50);
+        
+        let points = vec![25.0, 25.0];
+        brush_pixelate(&mut data, 50, 50, &points, 10, 4);
+        
+        // Should not panic and data should still be valid
+        assert_eq!(data.len(), 50 * 50 * 4);
+    }
+
+    #[test]
+    fn test_brush_pixelate_empty_points() {
+        let original = create_test_image(10, 10);
+        let mut data = original.clone();
+        
+        let points: Vec<f32> = vec![];
+        brush_pixelate(&mut data, 10, 10, &points, 4, 2);
+        
+        // No change with empty points
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_brush_pixelate_out_of_bounds() {
+        let mut data = create_test_image(10, 10);
+        
+        // Points outside the image
+        let points = vec![-10.0, -10.0, 100.0, 100.0];
+        brush_pixelate(&mut data, 10, 10, &points, 4, 2);
+        
+        // Should not panic
+        assert_eq!(data.len(), 400);
+    }
+}
