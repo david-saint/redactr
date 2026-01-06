@@ -84,27 +84,15 @@
   <header class="header">
     <div class="header-left">
       <div class="logo">
-        <svg width="24" height="24" viewBox="0 0 32 32" fill="none">
-          <rect width="32" height="32" rx="8" fill="var(--accent)" />
-          <rect
-            x="6"
-            y="6"
-            width="20"
-            height="20"
-            rx="3"
-            fill="none"
-            stroke="white"
-            stroke-width="2"
-          />
-          <rect
-            x="10"
-            y="10"
-            width="12"
-            height="6"
-            rx="1"
-            fill="white"
-            opacity="0.9"
-          />
+        <svg class="logo-icon" width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+          <rect width="64" height="64" rx="12" fill="#FBF9F2" />
+          <rect x="16" y="14" width="32" height="36" rx="4" stroke="currentColor" stroke-width="4" fill="none" />
+          <path d="M12 28 H52 V36 H12 Z" fill="currentColor" />
+          <path d="M14 26 H18 V28 H14 Z" fill="currentColor" />
+          <path d="M46 26 H50 V28 H46 Z" fill="currentColor" />
+          <path d="M18 36 H22 V38 H18 Z" fill="currentColor" />
+          <path d="M42 36 H46 V38 H42 Z" fill="currentColor" />
+          <path d="M28 26 H36 V28 H28 Z" fill="currentColor" />
         </svg>
         <span class="logo-text">Redactr</span>
       </div>
@@ -311,6 +299,10 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
+  }
+
+  .logo-icon {
+    color: var(--accent);
   }
 
   .logo-text {

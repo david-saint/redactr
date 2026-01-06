@@ -39,20 +39,20 @@ git clone https://github.com/yourusername/redactr.git
 cd redactr
 
 # 2. Install dependencies
-npm install
+pnpm install
 
 # 3. Build the WASM module
-npm run wasm:build
+pnpm wasm:build
 
 # 4. Start the development server
-npm run dev
+pnpm dev
 ```
 
 ### Production Build
 
 ```bash
-npm run build
-npm run preview
+pnpm build
+pnpm preview
 ```
 
 ## 🛠️ Tech Stack
