@@ -1,35 +1,50 @@
+<p align="center">
+  <img src="public/logo.png" alt="Redactr Logo" width="200" />
+</p>
+
 # Redactr
 
-A privacy-focused image redaction tool that runs entirely in your browser. No uploads, no servers - all processing happens locally using WebAssembly.
+**Privacy-first image redaction. In your browser. Forever.**
 
-## Features
+Redactr is a powerful, minimalist tool designed to help you shield sensitive information in images without ever compromising your privacy. Unlike other tools, Redactr processes everything **locally** on your device using Rust and WebAssembly. Your images never leave your browser.
 
-- **100% Local Processing** - Your images never leave your device
-- **Multiple Redaction Styles** - Solid fill, pixelation, and gaussian blur
-- **Rectangle & Brush Tools** - Precise selection or freehand redaction
-- **Adjustable Intensity** - Control blur radius or pixel block size
-- **Undo/Redo** - Full history support with keyboard shortcuts
-- **PWA** - Install on desktop or mobile, works offline
-- **Light/Dark/System Themes** - Minimalist interface
+[![PWA Ready](https://img.shields.io/badge/PWA-Ready-brightgreen.svg)](https://redactr.app)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## Getting Started
+---
+
+## ✨ Features
+
+- 🔒 **100% Local & Private** - All image processing happens in your browser via Rust/WASM. No servers, no uploads, no tracking.
+- 🌫️ **Professional Redaction Styles** - Choose between **Gaussian Blur**, **Pixelation**, and **Solid Fill** to best suit your needs.
+- 🖌️ **Precise Selection Tools** - Use the **Rectangle Tool** for quick blocks or the **Brush Tool** for freehand redaction.
+- 📶 **PWA & Offline Support** - Install Redactr on your desktop or mobile device. Once loaded, it works entirely offline.
+- 🎨 **Minimalist Aesthetic** - A clean, distraction-free interface with full support for **Light**, **Dark**, and **System** themes.
+- 🔄 **Non-Destructive Editing** - Full **Undo/Redo** history stack with standard keyboard shortcuts (`Ctrl+Z`, `Ctrl+Shift+Z`).
+- ⚡ **High Performance** - Powered by a custom Rust engine compiled to WebAssembly for blazing-fast pixel manipulation.
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
-- Rust toolchain with `wasm32-unknown-unknown` target
-- wasm-pack: `cargo install wasm-pack`
+- [Node.js](https://nodejs.org/) 18+
+- [Rust toolchain](https://rustup.rs/) with `wasm32-unknown-unknown` target
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/): `cargo install wasm-pack`
 
 ### Installation
 
 ```bash
-# Install dependencies
+# 1. Clone the repository
+git clone https://github.com/yourusername/redactr.git
+cd redactr
+
+# 2. Install dependencies
 npm install
 
-# Build WASM module
+# 3. Build the WASM module
 npm run wasm:build
 
-# Start development server
+# 4. Start the development server
 npm run dev
 ```
 
@@ -40,12 +55,19 @@ npm run build
 npm run preview
 ```
 
-## Tech Stack
+## 🛠️ Tech Stack
 
-- Svelte 5 + TypeScript + Vite
-- Rust + WebAssembly (wasm-pack)
-- PWA with vite-plugin-pwa
+- **Frontend**: [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/)
+- **Processing Engine**: [Rust](https://www.rust-lang.org/) + [WebAssembly](https://webassembly.org/)
+- **PWA**: `vite-plugin-pwa`
+- **Styling**: Vanilla CSS with custom properties
 
-## License
+## 🛡️ Privacy Policy
 
-MIT
+Redactr is built on the principle of **Privacy by Design**. We do not collect, store, or transmit any of your image data. Every pixel manipulation is performed locally in your browser's memory and is cleared as soon as you close the tab.
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
