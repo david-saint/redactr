@@ -300,4 +300,10 @@
     margin-top: var(--space-2);
     justify-content: center;
   }
+
+  @media (max-width: 767px) {
+    .panel {
+      display: none;
+    }
+  }
 </style>

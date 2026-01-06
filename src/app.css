@@ -42,6 +42,11 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
 
+  /* Mobile */
+  --touch-target-min: 44px;
+  --mobile-panel-height: 60px;
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+
   /* Typography */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     sans-serif;
@@ -400,4 +405,27 @@ input[type="color"]::-webkit-color-swatch {
 
 .animate-slide-up {
   animation: slideUp 0.3s ease;
+}
+
+/* Mobile Responsive */
+@media (max-width: 767px) {
+  input[type="range"]::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+  }
+
+  button.icon-only {
+    min-width: var(--touch-target-min);
+    height: var(--touch-target-min);
+  }
+
+  /* Hide tooltips on touch devices */
+  [data-tooltip]::after {
+    display: none;
+  }
 }

@@ -201,6 +201,15 @@
     };
   }
 
+  function getTouchCoords(e: TouchEvent): { x: number; y: number } {
+    const rect = canvasEl.getBoundingClientRect();
+    const touch = e.touches[0] || e.changedTouches[0];
+    return {
+      x: (touch.clientX - rect.left) / scale,
+      y: (touch.clientY - rect.top) / scale,
+    };
+  }
+
   function handleMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
 
@@ -229,6 +238,50 @@
   }
 
   function handleMouseUp() {
+    if (isSelecting && selectionStart && selectionEnd) {
+      applyRectSelection();
+    } else if (isBrushing && brushPoints.length >= 2) {
+      applyBrushStroke();
+    }
+
+    isSelecting = false;
+    isBrushing = false;
+    selectionStart = null;
+    selectionEnd = null;
+    brushPoints = [];
+    renderOverlay();
+  }
+
+  // Touch event handlers for mobile
+  function handleTouchStart(e: TouchEvent) {
+    e.preventDefault(); // Prevent scrolling while drawing
+    const coords = getTouchCoords(e);
+
+    if ($settingsStore.tool === "rect") {
+      isSelecting = true;
+      selectionStart = coords;
+      selectionEnd = coords;
+    } else if ($settingsStore.tool === "brush") {
+      isBrushing = true;
+      brushPoints = [coords.x, coords.y];
+    }
+  }
+
+  function handleTouchMove(e: TouchEvent) {
+    e.preventDefault();
+    const coords = getTouchCoords(e);
+
+    if (isSelecting && $settingsStore.tool === "rect") {
+      selectionEnd = coords;
+      renderOverlay();
+    } else if (isBrushing && $settingsStore.tool === "brush") {
+      brushPoints.push(coords.x, coords.y);
+      renderOverlay();
+    }
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    e.preventDefault();
     if (isSelecting && selectionStart && selectionEnd) {
       applyRectSelection();
     } else if (isBrushing && brushPoints.length >= 2) {
@@ -340,6 +393,10 @@
       on:mousemove={handleMouseMove}
       on:mouseup={handleMouseUp}
       on:mouseleave={handleMouseUp}
+      on:touchstart={handleTouchStart}
+      on:touchmove={handleTouchMove}
+      on:touchend={handleTouchEnd}
+      on:touchcancel={handleTouchEnd}
     ></canvas>
   </div>
 </div>
@@ -377,6 +434,7 @@
 
   .overlay-canvas {
     z-index: 1;
+    touch-action: none; /* Prevent browser gestures while drawing */
   }
 
   .rect-cursor {
@@ -385,5 +443,12 @@
 
   .brush-cursor {
     cursor: crosshair;
+  }
+
+  @media (max-width: 767px) {
+    .canvas-container {
+      /* Account for mobile bottom panel */
+      padding-bottom: calc(var(--mobile-panel-height) + var(--safe-area-bottom));
+    }
   }
 </style>

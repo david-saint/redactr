@@ -280,4 +280,47 @@
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
   }
+
+  @media (max-width: 767px) {
+    .dropzone-container {
+      padding: var(--space-4);
+      gap: var(--space-6);
+    }
+
+    .dropzone {
+      max-width: 100%;
+      aspect-ratio: 1/1;
+      padding: var(--space-4);
+    }
+
+    .icon-wrapper {
+      width: 64px;
+      height: 64px;
+    }
+
+    .icon-wrapper svg {
+      width: 32px;
+      height: 32px;
+    }
+
+    .text-content h2 {
+      font-size: 1.125rem;
+    }
+
+    .text-content p {
+      font-size: 0.8125rem;
+    }
+
+    .features {
+      flex-direction: column;
+      gap: var(--space-3);
+      align-items: stretch;
+      width: 100%;
+      max-width: 280px;
+    }
+
+    .feature {
+      max-width: 100%;
+    }
+  }
 </style>

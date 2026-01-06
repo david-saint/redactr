@@ -135,4 +135,10 @@
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
   }
+
+  @media (max-width: 767px) {
+    .toolbar {
+      display: none;
+    }
+  }
 </style>

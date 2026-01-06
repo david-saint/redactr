@@ -6,6 +6,7 @@
   import Canvas from "./lib/components/Canvas.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import StylePanel from "./lib/components/StylePanel.svelte";
+  import MobileBottomPanel from "./lib/components/MobileBottomPanel.svelte";
   import DropZone from "./lib/components/DropZone.svelte";
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
 
@@ -232,6 +233,7 @@
         <Toolbar />
         <Canvas />
         <StylePanel />
+        <MobileBottomPanel />
       </div>
     {/if}
   </main>
@@ -418,5 +420,34 @@
 
   .privacy-badge svg {
     color: var(--success);
+  }
+
+  /* Mobile Responsive */
+  @media (max-width: 767px) {
+    .header {
+      padding: var(--space-2) var(--space-3);
+      min-height: 48px;
+    }
+
+    .header-divider,
+    .file-name {
+      display: none;
+    }
+
+    .header-center {
+      display: none;
+    }
+
+    .logo-text {
+      font-size: 1rem;
+    }
+
+    .editor {
+      flex-direction: column;
+    }
+
+    .footer {
+      display: none;
+    }
   }
 </style>
