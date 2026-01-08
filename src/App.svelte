@@ -1,14 +1,24 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { theme } from "./lib/stores/theme";
   import { imageStore, hasImage } from "./lib/stores/image";
   import { historyStore, canUndo, canRedo } from "./lib/stores/history";
+  import { settingsStore } from "./lib/stores/settings";
+  import {
+    detectionStore,
+    detectionCounts,
+    selectedDetections,
+    type Detection,
+  } from "./lib/stores/detection";
+  import { applyRectRedaction, isWasmReady } from "./lib/wasm/redactor";
   import Canvas from "./lib/components/Canvas.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import StylePanel from "./lib/components/StylePanel.svelte";
   import MobileBottomPanel from "./lib/components/MobileBottomPanel.svelte";
   import DropZone from "./lib/components/DropZone.svelte";
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
+  import DetectionPanel from "./lib/components/DetectionPanel.svelte";
+  import { cleanup as cleanupDetection } from "./lib/detection/manager";
 
   let wasmReady = false;
   let wasmError: string | null = null;
@@ -76,7 +86,66 @@
   function handleClear() {
     imageStore.clear();
     historyStore.clear();
+    detectionStore.clearResults();
+    detectionStore.closePanel();
   }
+
+  // Handle applying redactions from detection panel
+  function handleApplyRedactions(event: CustomEvent<Detection[]>) {
+    const detections = event.detail;
+    if (!detections.length || !$imageStore.current || !isWasmReady()) return;
+
+    let currentData = $imageStore.current;
+
+    for (const detection of detections) {
+      const { x, y, width, height } = detection.bbox;
+
+      // Apply redaction
+      currentData = applyRectRedaction(
+        currentData,
+        Math.max(0, x),
+        Math.max(0, y),
+        Math.min(width, $imageStore.width - x),
+        Math.min(height, $imageStore.height - y),
+        {
+          style: $settingsStore.style,
+          intensity: $settingsStore.intensity,
+          color: $settingsStore.fillColor,
+        }
+      );
+
+      // Push to history
+      historyStore.push({
+        type: "rect",
+        style: $settingsStore.style,
+        region: { x, y, width, height },
+        points: null,
+        intensity: $settingsStore.intensity,
+        color: $settingsStore.fillColor,
+      });
+    }
+
+    imageStore.updateCurrent(currentData);
+
+    // Clear detection results after applying
+    detectionStore.clearResults();
+  }
+
+  // Listen for applyRedactions event from DetectionPanel
+  onMount(() => {
+    document.addEventListener(
+      "applyRedactions",
+      handleApplyRedactions as EventListener
+    );
+  });
+
+  onDestroy(() => {
+    document.removeEventListener(
+      "applyRedactions",
+      handleApplyRedactions as EventListener
+    );
+    cleanupDetection();
+  });
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -85,9 +154,24 @@
   <header class="header">
     <div class="header-left">
       <div class="logo">
-        <svg class="logo-icon" width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <svg
+          class="logo-icon"
+          width="24"
+          height="24"
+          viewBox="0 0 64 64"
+          xmlns="http://www.w3.org/2000/svg"
+        >
           <rect width="64" height="64" rx="12" fill="#FBF9F2" />
-          <rect x="16" y="14" width="32" height="36" rx="4" stroke="currentColor" stroke-width="4" fill="none" />
+          <rect
+            x="16"
+            y="14"
+            width="32"
+            height="36"
+            rx="4"
+            stroke="currentColor"
+            stroke-width="4"
+            fill="none"
+          />
           <path d="M12 28 H52 V36 H12 Z" fill="currentColor" />
           <path d="M14 26 H18 V28 H14 Z" fill="currentColor" />
           <path d="M46 26 H50 V28 H46 Z" fill="currentColor" />
@@ -154,6 +238,30 @@
 
     <div class="header-right">
       {#if $hasImage}
+        <button
+          on:click={() => detectionStore.togglePanel()}
+          class="icon-only ghost mobile-only-btn"
+          class:active={$detectionStore.isPanelOpen}
+          aria-label="Auto-detect"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M11 8v6M8 11h6" />
+            <circle cx="11" cy="11" r="8" />
+            <path d="M21 21l-4.35-4.35" />
+          </svg>
+          {#if $detectionCounts.total > 0}
+            <span class="badg-dot"></span>
+          {/if}
+        </button>
         <button on:click={handleClear} class="danger sm">
           <svg
             width="14"
@@ -231,7 +339,10 @@
     {:else}
       <div class="editor">
         <Toolbar />
-        <Canvas />
+        <div class="canvas-area">
+          <Canvas />
+          <DetectionPanel />
+        </div>
         <StylePanel />
         <MobileBottomPanel />
       </div>
@@ -356,6 +467,14 @@
     overflow: hidden;
   }
 
+  .canvas-area {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
   .status-screen {
     flex: 1;
     display: flex;
@@ -448,6 +567,26 @@
 
     .footer {
       display: none;
+    }
+  }
+
+  .mobile-only-btn {
+    display: none;
+  }
+
+  .badg-dot {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+
+  @media (max-width: 767px) {
+    .mobile-only-btn {
+      display: flex;
     }
   }
 </style>

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { settingsStore, type Tool } from '../stores/settings';
+  import { detectionStore, detectionCounts } from '../stores/detection';
+  import { imageStore } from '../stores/image';
 
   const tools: { id: Tool; label: string; icon: string }[] = [
     {
@@ -50,6 +52,30 @@
       </div>
     </div>
   {/if}
+
+  <!-- Auto-detect AI -->
+  <div class="tool-section auto-detect-section">
+    <span class="section-label">AI Detect</span>
+    <div class="tool-group">
+      <button
+        class="tool-button detect-button"
+        class:active={$detectionStore.isPanelOpen}
+        on:click={() => detectionStore.togglePanel()}
+        data-tooltip="Auto-detect sensitive content"
+        aria-label="Auto-detect"
+        disabled={!$imageStore.current}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8" />
+          <path d="M21 21l-4.35-4.35" />
+          <path d="M11 8v6M8 11h6" />
+        </svg>
+        {#if $detectionCounts.total > 0}
+          <span class="detection-badge">{$detectionCounts.total}</span>
+        {/if}
+      </button>
+    </div>
+  </div>
 </aside>
 
 <style>
@@ -134,6 +160,38 @@
     font-weight: 600;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  .auto-detect-section {
+    margin-top: auto;
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border);
+  }
+
+  .detect-button {
+    position: relative;
+  }
+
+  .detect-button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .detection-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    background: var(--accent);
+    color: white;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   @media (max-width: 767px) {

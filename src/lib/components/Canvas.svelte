@@ -8,11 +8,24 @@
     type RedactionCommand,
   } from "../stores/history";
   import {
+    detectionStore,
+    type Detection,
+    type DetectionType,
+  } from "../stores/detection";
+  import {
     applyRectRedaction,
     applyBrushRedaction,
     isWasmReady,
     wasmReady,
   } from "../wasm/redactor";
+
+  // Detection type colors
+  const detectionColors: Record<DetectionType, string> = {
+    face: '#f59e0b',      // Amber
+    text: '#3b82f6',      // Blue
+    license_plate: '#10b981', // Emerald
+    document: '#8b5cf6',   // Purple
+  };
 
   let containerEl: HTMLDivElement;
   let canvasEl: HTMLCanvasElement;
@@ -160,6 +173,65 @@
     if (!overlayCtx) return;
     overlayCtx.clearRect(0, 0, canvasWidth, canvasHeight);
 
+    // Draw detection bounding boxes
+    if ($detectionStore.results.length > 0) {
+      for (const detection of $detectionStore.results) {
+        const { x, y, width, height } = detection.bbox;
+        const color = detectionColors[detection.type];
+
+        // Draw fill
+        overlayCtx.fillStyle = detection.selected
+          ? `${color}30`  // 30% opacity when selected
+          : `${color}15`; // 15% opacity when not selected
+        overlayCtx.fillRect(x, y, width, height);
+
+        // Draw border
+        overlayCtx.strokeStyle = detection.selected ? color : `${color}80`;
+        overlayCtx.lineWidth = detection.selected ? 3 / scale : 2 / scale;
+        overlayCtx.setLineDash([]);
+        overlayCtx.strokeRect(x, y, width, height);
+
+        // Draw label
+        const label = detection.label || detection.type;
+        const fontSize = Math.max(12, 14 / scale);
+        overlayCtx.font = `${fontSize}px system-ui, sans-serif`;
+        const textMetrics = overlayCtx.measureText(label);
+        const textHeight = fontSize + 4;
+        const textPadding = 4;
+
+        // Label background
+        overlayCtx.fillStyle = color;
+        overlayCtx.fillRect(
+          x,
+          y - textHeight - 2,
+          textMetrics.width + textPadding * 2,
+          textHeight
+        );
+
+        // Label text
+        overlayCtx.fillStyle = 'white';
+        overlayCtx.fillText(label, x + textPadding, y - 6);
+
+        // Selection indicator
+        if (detection.selected) {
+          // Draw checkmark in corner
+          const checkSize = 16 / scale;
+          overlayCtx.fillStyle = color;
+          overlayCtx.beginPath();
+          overlayCtx.arc(x + width - checkSize/2 - 4, y + checkSize/2 + 4, checkSize/2, 0, Math.PI * 2);
+          overlayCtx.fill();
+
+          overlayCtx.strokeStyle = 'white';
+          overlayCtx.lineWidth = 2 / scale;
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(x + width - checkSize - 2, y + checkSize/2 + 4);
+          overlayCtx.lineTo(x + width - checkSize/2 - 4, y + checkSize + 2);
+          overlayCtx.lineTo(x + width - 4, y + 6);
+          overlayCtx.stroke();
+        }
+      }
+    }
+
     // Draw selection rectangle
     if (selectionStart && selectionEnd && $settingsStore.tool === "rect") {
       const x = Math.min(selectionStart.x, selectionEnd.x);
@@ -193,6 +265,11 @@
     }
   }
 
+  // Re-render overlay when detection results change
+  $: if ($detectionStore.results && overlayCtx) {
+    renderOverlay();
+  }
+
   function getCanvasCoords(e: MouseEvent): { x: number; y: number } {
     const rect = canvasEl.getBoundingClientRect();
     return {
@@ -214,6 +291,24 @@
     if (e.button !== 0) return;
 
     const coords = getCanvasCoords(e);
+
+    // Check if clicking on a detection box
+    if ($detectionStore.results.length > 0) {
+      for (const detection of $detectionStore.results) {
+        const { x, y, width, height } = detection.bbox;
+        if (
+          coords.x >= x &&
+          coords.x <= x + width &&
+          coords.y >= y &&
+          coords.y <= y + height
+        ) {
+          // Toggle selection
+          detectionStore.toggleSelection(detection.id);
+          renderOverlay();
+          return; // Don't start drawing
+        }
+      }
+    }
 
     if ($settingsStore.tool === "rect") {
       isSelecting = true;
