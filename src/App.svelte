@@ -18,7 +18,10 @@
   import DropZone from "./lib/components/DropZone.svelte";
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
   import DetectionPanel from "./lib/components/DetectionPanel.svelte";
-  import { cleanup as cleanupDetection } from "./lib/detection/manager";
+  import {
+    cleanup as cleanupDetection,
+    cancelDetection,
+  } from "./lib/detection/manager";
 
   let wasmReady = false;
   let wasmError: string | null = null;
@@ -84,6 +87,7 @@
   }
 
   function handleClear() {
+    cancelDetection();
     imageStore.clear();
     historyStore.clear();
     detectionStore.clearResults();

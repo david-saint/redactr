@@ -182,6 +182,9 @@ function createDetectionStore() {
         ...s,
         results: [],
         progress: 0,
+        downloadProgress: 0,
+        isDetecting: false,
+        isDownloading: false,
         currentStage: "",
         error: null,
       })),
@@ -234,27 +237,29 @@ export const needsModelDownload = derived(detectionStore, ($store) => {
 });
 
 // Estimate model download size based on enabled types (in MB)
+// Estimate model download size based on enabled types (in MB)
 export const estimatedDownloadSize = derived(detectionStore, ($store) => {
   let size = 0;
-  const sizes: Record<DetectionType, number> = {
-    face: 0.3, // MediaPipe Face Detector (~260KB)
-    text: 5, // Tesseract English
-    license_plate: 25, // YOLOS specialized LPD model
-    document: 10, // DETR
-  };
 
-  for (const type of $store.enabledTypes) {
-    if (!$store.modelsLoaded[type]) {
-      // DETR is shared between license_plate and document
-      if (
-        ((type === "license_plate" || type === "document") &&
-          $store.modelsLoaded.license_plate) ||
-        $store.modelsLoaded.document
-      ) {
-        continue;
-      }
-      size += sizes[type];
-    }
+  // Independent models
+  if ($store.enabledTypes.includes("face") && !$store.modelsLoaded.face) {
+    size += 0.3; // MediaPipe Face Detector
+  }
+
+  if ($store.enabledTypes.includes("text") && !$store.modelsLoaded.text) {
+    size += 5; // Tesseract
+  }
+
+  // Shared model: DETR-ResNet-50 (used for both document and vehicle/plate detection)
+  const usesSharedModel =
+    $store.enabledTypes.includes("license_plate") ||
+    $store.enabledTypes.includes("document");
+
+  const sharedModelLoaded =
+    $store.modelsLoaded.license_plate || $store.modelsLoaded.document;
+
+  if (usesSharedModel && !sharedModelLoaded) {
+    size += 42; // DETR-ResNet-50 (Quantized) ~42MB
   }
 
   return size;

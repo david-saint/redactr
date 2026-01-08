@@ -201,26 +201,23 @@ async function detectLicensePlates(
   const needsDownload = !plateDetector;
 
   if (needsDownload && isFirstRun) {
-    reportDownloadProgress(
-      35,
-      "Downloading license plate detection model (~25MB)..."
-    );
+    reportDownloadProgress(35, "Downloading vehicle detection model...");
   } else {
-    reportProgress(40, "Loading license plate detection model...");
+    reportProgress(40, "Loading vehicle detection model...");
   }
 
   try {
     if (!plateDetector) {
       const detector = await pipeline(
         "object-detection",
-        "nickmuchi/yolos-small-finetuned-license-plate-detection",
+        "Xenova/detr-resnet-50",
         {
           progress_callback: (progress: { progress?: number }) => {
             if (progress.progress !== undefined && isFirstRun) {
               const percent = 35 + Math.round(progress.progress * 15); // 35-50%
               reportDownloadProgress(
                 percent,
-                `Downloading license plate detection model... ${percent}%`
+                `Downloading vehicle detection model... ${percent}%`
               );
             }
           },
@@ -231,7 +228,7 @@ async function detectLicensePlates(
     }
 
     if (isCancelled) return [];
-    reportProgress(50, "Detecting license plates...");
+    reportProgress(50, "Detecting vehicles...");
 
     const canvas = new OffscreenCanvas(imageData.width, imageData.height);
     const ctx = canvas.getContext("2d");
@@ -246,8 +243,12 @@ async function detectLicensePlates(
       const detections: Detection[] = [];
 
       for (const result of results) {
-        // The model outputs "license-plate" or similar label
-        if (result.score > 0.3) {
+        const label = result.label.toLowerCase();
+        // Fallback: Detect vehicles since specific license plate model is unavailable
+        if (
+          ["car", "truck", "bus", "motorcycle"].includes(label) &&
+          result.score > 0.5
+        ) {
           detections.push({
             id: generateId(),
             type: "license_plate",
@@ -259,7 +260,7 @@ async function detectLicensePlates(
             },
             confidence: result.score,
             selected: true,
-            label: `License Plate (${Math.round(result.score * 100)}%)`,
+            label: `${result.label} (Potential Plate)`,
           });
         }
       }

@@ -36,7 +36,7 @@ export async function initFaceDetector(
 
     // Load the WASM runtime
     const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm"
     );
 
     onProgress?.(50, "Initializing face detector (~260KB)...");
@@ -49,7 +49,7 @@ export async function initFaceDetector(
         delegate: "GPU", // Use GPU if available, falls back to CPU
       },
       runningMode: "IMAGE",
-      minDetectionConfidence: 0.5,
+      minDetectionConfidence: 0.3,
     });
 
     onProgress?.(100, "Face detector ready");

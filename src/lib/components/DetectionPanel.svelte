@@ -33,10 +33,10 @@
   };
 
   const typeDescriptions: Record<DetectionType, string> = {
-    face: "Use when you need to anonymize people's identities.",
-    text: "Use when you need to redact specific textual information.",
-    license_plate: "Use when you need to hide vehicle license plates.",
-    document: "Use when you need to redact screens, books, or papers.",
+    face: "Detects faces using MediaPipe for high privacy.",
+    text: "Identifies and redacts text regions.",
+    license_plate: "Detects vehicles to obscure potential license plates.",
+    document: "Identifies screens, paper documents, and digital displays.",
   };
 
   // Consent state
@@ -94,10 +94,14 @@
 {#if $detectionStore.isPanelOpen}
   <div class="detection-panel">
     <div class="panel-header">
-      <h3>Auto-detect</h3>
+      <h3>AI Detection</h3>
       <button
         class="icon-only ghost"
-        on:click={() => detectionStore.closePanel()}
+        on:click={() => {
+          cancelDetection();
+          detectionStore.clearResults();
+          detectionStore.closePanel();
+        }}
         aria-label="Close panel"
       >
         ✕
