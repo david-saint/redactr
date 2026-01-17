@@ -1,19 +1,24 @@
 <script lang="ts">
-  import { settingsStore, type Tool } from '../stores/settings';
-  import { detectionStore, detectionCounts } from '../stores/detection';
-  import { imageStore } from '../stores/image';
+  import { settingsStore, type Tool } from "../stores/settings";
+  import { detectionStore, detectionCounts } from "../stores/detection";
+  import { imageStore } from "../stores/image";
 
   const tools: { id: Tool; label: string; icon: string }[] = [
     {
-      id: 'rect',
-      label: 'Rectangle',
-      icon: 'M3 3h18v18H3V3z'
+      id: "hand",
+      label: "Hand (H)",
+      icon: "M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6M10 10V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.1 15a1.4 1.4 0 0 1 .6-2.3 1.4 1.4 0 0 1 1.1.3L6 14",
     },
     {
-      id: 'brush',
-      label: 'Brush',
-      icon: 'M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08M9.06 11.9l-1.77 5.32 5.32-1.77M9.06 11.9l3.55 3.55'
-    }
+      id: "rect",
+      label: "Rectangle (V)",
+      icon: "M3 3h18v18H3V3z",
+    },
+    {
+      id: "brush",
+      label: "Brush (V)",
+      icon: "M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08M9.06 11.9l-1.77 5.32 5.32-1.77M9.06 11.9l3.55 3.55",
+    },
   ];
 </script>
 
@@ -29,7 +34,16 @@
           data-tooltip={tool.label}
           aria-label={tool.label}
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d={tool.icon} />
           </svg>
         </button>
@@ -37,7 +51,7 @@
     </div>
   </div>
 
-  {#if $settingsStore.tool === 'brush'}
+  {#if $settingsStore.tool === "brush"}
     <div class="tool-section">
       <span class="section-label">Brush Size</span>
       <div class="slider-control">
@@ -46,7 +60,8 @@
           min="5"
           max="100"
           value={$settingsStore.brushSize}
-          on:input={(e) => settingsStore.setBrushSize(parseInt(e.currentTarget.value))}
+          on:input={(e) =>
+            settingsStore.setBrushSize(parseInt(e.currentTarget.value))}
         />
         <span class="slider-value">{$settingsStore.brushSize}</span>
       </div>
@@ -65,10 +80,23 @@
         aria-label="Auto-detect"
         disabled={!$imageStore.current}
       >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8" />
-          <path d="M21 21l-4.35-4.35" />
-          <path d="M11 8v6M8 11h6" />
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"
+          />
+          <path d="m5 3 1 1" />
+          <path d="m19 21 1 1" />
+          <path d="m5 21 1-1" />
+          <path d="m19 3 1-1" />
         </svg>
         {#if $detectionCounts.total > 0}
           <span class="detection-badge">{$detectionCounts.total}</span>
