@@ -18,6 +18,7 @@
     isWasmReady,
     wasmReady,
   } from "../wasm/redactor";
+  import { zoomStore, MIN_ZOOM, MAX_ZOOM } from "../stores/zoom";
 
   // Detection type colors
   const detectionColors: Record<DetectionType, string> = {
@@ -46,11 +47,32 @@
   let isBrushing = false;
   let brushPoints: number[] = [];
 
+  // Pan state
+  let isPanMode = false;
+  let panStart: { x: number; y: number } | null = null;
+
+  // Pinch-to-zoom state
+  let pinchState: {
+    initialDistance: number;
+    initialZoom: number;
+    initialPanX: number;
+    initialPanY: number;
+    centerX: number;
+    centerY: number;
+  } | null = null;
+
+  // Computed effective scale and offset (base fit-to-container + user zoom/pan)
+  $: effectiveScale = scale * $zoomStore.zoom;
+  $: effectiveOffsetX = offsetX + $zoomStore.panX;
+  $: effectiveOffsetY = offsetY + $zoomStore.panY;
+
   $: canvasWidth = $imageStore.width;
   $: canvasHeight = $imageStore.height;
 
   // Render image when it first loads or changes
   $: if ($imageStore.current && ctx) {
+    // Reset zoom when image changes
+    zoomStore.reset();
     // Defer to ensure canvas dimensions are updated in DOM
     requestAnimationFrame(() => {
       fitToContainer();
@@ -187,13 +209,13 @@
 
         // Draw border
         overlayCtx.strokeStyle = detection.selected ? color : `${color}80`;
-        overlayCtx.lineWidth = detection.selected ? 3 / scale : 2 / scale;
+        overlayCtx.lineWidth = detection.selected ? 3 / effectiveScale : 2 / effectiveScale;
         overlayCtx.setLineDash([]);
         overlayCtx.strokeRect(x, y, width, height);
 
         // Draw label
         const label = detection.label || detection.type;
-        const fontSize = Math.max(12, 14 / scale);
+        const fontSize = Math.max(12, 14 / effectiveScale);
         overlayCtx.font = `${fontSize}px system-ui, sans-serif`;
         const textMetrics = overlayCtx.measureText(label);
         const textHeight = fontSize + 4;
@@ -215,14 +237,14 @@
         // Selection indicator
         if (detection.selected) {
           // Draw checkmark in corner
-          const checkSize = 16 / scale;
+          const checkSize = 16 / effectiveScale;
           overlayCtx.fillStyle = color;
           overlayCtx.beginPath();
           overlayCtx.arc(x + width - checkSize/2 - 4, y + checkSize/2 + 4, checkSize/2, 0, Math.PI * 2);
           overlayCtx.fill();
 
           overlayCtx.strokeStyle = 'white';
-          overlayCtx.lineWidth = 2 / scale;
+          overlayCtx.lineWidth = 2 / effectiveScale;
           overlayCtx.beginPath();
           overlayCtx.moveTo(x + width - checkSize - 2, y + checkSize/2 + 4);
           overlayCtx.lineTo(x + width - checkSize/2 - 4, y + checkSize + 2);
@@ -240,8 +262,8 @@
       const h = Math.abs(selectionEnd.y - selectionStart.y);
 
       overlayCtx.strokeStyle = "rgba(99, 102, 241, 0.9)";
-      overlayCtx.lineWidth = 2 / scale;
-      overlayCtx.setLineDash([6 / scale, 4 / scale]);
+      overlayCtx.lineWidth = 2 / effectiveScale;
+      overlayCtx.setLineDash([6 / effectiveScale, 4 / effectiveScale]);
       overlayCtx.strokeRect(x, y, w, h);
 
       overlayCtx.fillStyle = "rgba(99, 102, 241, 0.15)";
@@ -273,8 +295,8 @@
   function getCanvasCoords(e: MouseEvent): { x: number; y: number } {
     const rect = canvasEl.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) / scale,
-      y: (e.clientY - rect.top) / scale,
+      x: (e.clientX - rect.left) / effectiveScale,
+      y: (e.clientY - rect.top) / effectiveScale,
     };
   }
 
@@ -282,12 +304,79 @@
     const rect = canvasEl.getBoundingClientRect();
     const touch = e.touches[0] || e.changedTouches[0];
     return {
-      x: (touch.clientX - rect.left) / scale,
-      y: (touch.clientY - rect.top) / scale,
+      x: (touch.clientX - rect.left) / effectiveScale,
+      y: (touch.clientY - rect.top) / effectiveScale,
+    };
+  }
+
+  // Wheel zoom handler
+  function handleWheel(e: WheelEvent) {
+    e.preventDefault();
+    const rect = containerEl.getBoundingClientRect();
+    const centerX = e.clientX - rect.left;
+    const centerY = e.clientY - rect.top;
+    // Proportional zoom based on current zoom level
+    const delta = -e.deltaY * 0.001 * $zoomStore.zoom;
+    zoomStore.zoomAtPoint(delta, centerX, centerY);
+  }
+
+  // Keyboard handlers for pan mode
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.code === 'Space' && !isPanMode && !e.repeat) {
+      e.preventDefault();
+      isPanMode = true;
+      zoomStore.setPanning(true);
+    }
+  }
+
+  function handleKeyUp(e: KeyboardEvent) {
+    if (e.code === 'Space') {
+      isPanMode = false;
+      zoomStore.setPanning(false);
+      panStart = null;
+    }
+  }
+
+  // Pinch-to-zoom helpers
+  function getTouchDistance(touches: TouchList): number {
+    if (touches.length < 2) return 0;
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  function getTouchCenter(touches: TouchList): { x: number; y: number } {
+    if (touches.length < 2) return { x: 0, y: 0 };
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2,
+      y: (touches[0].clientY + touches[1].clientY) / 2
     };
   }
 
   function handleMouseDown(e: MouseEvent) {
+    // Middle mouse button for pan
+    if (e.button === 1) {
+      e.preventDefault();
+      panStart = { x: e.clientX, y: e.clientY };
+      zoomStore.setPanning(true);
+      return;
+    }
+
+    // Hand tool pans on left click
+    if (e.button === 0 && $settingsStore.tool === 'hand') {
+      e.preventDefault();
+      panStart = { x: e.clientX, y: e.clientY };
+      zoomStore.setPanning(true);
+      return;
+    }
+
+    // Space + left click for pan
+    if (e.button === 0 && isPanMode) {
+      e.preventDefault();
+      panStart = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
     if (e.button !== 0) return;
 
     const coords = getCanvasCoords(e);
@@ -321,6 +410,15 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
+    // Handle panning (hand tool, space+drag, or middle mouse)
+    if (panStart && ($settingsStore.tool === 'hand' || isPanMode || e.buttons === 4)) {
+      const deltaX = e.clientX - panStart.x;
+      const deltaY = e.clientY - panStart.y;
+      zoomStore.pan(deltaX, deltaY);
+      panStart = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
     const coords = getCanvasCoords(e);
 
     if (isSelecting && $settingsStore.tool === "rect") {
@@ -332,7 +430,27 @@
     }
   }
 
-  function handleMouseUp() {
+  function handleMouseUp(e: MouseEvent) {
+    // End pan if middle mouse was used
+    if (e.button === 1) {
+      panStart = null;
+      zoomStore.setPanning(false);
+      return;
+    }
+
+    // End pan if hand tool
+    if ($settingsStore.tool === 'hand' && panStart) {
+      panStart = null;
+      zoomStore.setPanning(false);
+      return;
+    }
+
+    // End pan if space+click
+    if (panStart && isPanMode) {
+      panStart = null;
+      return;
+    }
+
     if (isSelecting && selectionStart && selectionEnd) {
       applyRectSelection();
     } else if (isBrushing && brushPoints.length >= 2) {
@@ -349,6 +467,24 @@
 
   // Touch event handlers for mobile
   function handleTouchStart(e: TouchEvent) {
+    // Pinch-to-zoom with 2 fingers
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const distance = getTouchDistance(e.touches);
+      const center = getTouchCenter(e.touches);
+      const rect = containerEl.getBoundingClientRect();
+
+      pinchState = {
+        initialDistance: distance,
+        initialZoom: $zoomStore.zoom,
+        initialPanX: $zoomStore.panX,
+        initialPanY: $zoomStore.panY,
+        centerX: center.x - rect.left,
+        centerY: center.y - rect.top
+      };
+      return;
+    }
+
     e.preventDefault(); // Prevent scrolling while drawing
     const coords = getTouchCoords(e);
 
@@ -363,6 +499,38 @@
   }
 
   function handleTouchMove(e: TouchEvent) {
+    // Handle pinch-to-zoom
+    if (e.touches.length === 2 && pinchState) {
+      e.preventDefault();
+
+      const newDistance = getTouchDistance(e.touches);
+      const newCenter = getTouchCenter(e.touches);
+      const rect = containerEl.getBoundingClientRect();
+
+      // Calculate zoom from pinch
+      const zoomRatio = newDistance / pinchState.initialDistance;
+      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
+        pinchState.initialZoom * zoomRatio
+      ));
+
+      // Calculate pan from gesture movement
+      const centerX = newCenter.x - rect.left;
+      const centerY = newCenter.y - rect.top;
+      const panDeltaX = centerX - pinchState.centerX;
+      const panDeltaY = centerY - pinchState.centerY;
+
+      // Apply zoom centered on pinch center
+      const actualRatio = newZoom / pinchState.initialZoom;
+      const panX = pinchState.initialPanX + panDeltaX -
+        (pinchState.centerX - pinchState.initialPanX) * (actualRatio - 1);
+      const panY = pinchState.initialPanY + panDeltaY -
+        (pinchState.centerY - pinchState.initialPanY) * (actualRatio - 1);
+
+      zoomStore.setZoom(newZoom);
+      zoomStore.setPan(panX, panY);
+      return;
+    }
+
     e.preventDefault();
     const coords = getTouchCoords(e);
 
@@ -377,6 +545,15 @@
 
   function handleTouchEnd(e: TouchEvent) {
     e.preventDefault();
+
+    // End pinch if fewer than 2 touches remain
+    if (e.touches.length < 2) {
+      pinchState = null;
+    }
+
+    // Only end drawing if no touches remain
+    if (e.touches.length > 0) return;
+
     if (isSelecting && selectionStart && selectionEnd) {
       applyRectSelection();
     } else if (isBrushing && brushPoints.length >= 2) {
@@ -462,12 +639,18 @@
   }
 </script>
 
-<div class="canvas-container" bind:this={containerEl}>
+<svelte:window on:keydown={handleKeyDown} on:keyup={handleKeyUp} />
+
+<div
+  class="canvas-container"
+  bind:this={containerEl}
+  on:wheel={handleWheel}
+>
   <div
     class="canvas-wrapper"
     style="
-      transform: translate({offsetX}px, {offsetY}px) scale({scale}); 
-      width: {canvasWidth}px; 
+      transform: translate({effectiveOffsetX}px, {effectiveOffsetY}px) scale({effectiveScale});
+      width: {canvasWidth}px;
       height: {canvasHeight}px;
     "
   >
@@ -482,8 +665,11 @@
       width={canvasWidth}
       height={canvasHeight}
       class="overlay-canvas"
-      class:rect-cursor={$settingsStore.tool === "rect"}
-      class:brush-cursor={$settingsStore.tool === "brush"}
+      class:rect-cursor={$settingsStore.tool === "rect" && !$zoomStore.isPanning}
+      class:brush-cursor={$settingsStore.tool === "brush" && !$zoomStore.isPanning}
+      class:hand-cursor={$settingsStore.tool === "hand" && !panStart}
+      class:panning={$zoomStore.isPanning && $settingsStore.tool !== "hand"}
+      class:pan-active={panStart !== null}
       on:mousedown={handleMouseDown}
       on:mousemove={handleMouseMove}
       on:mouseup={handleMouseUp}
@@ -538,6 +724,18 @@
 
   .brush-cursor {
     cursor: crosshair;
+  }
+
+  .hand-cursor {
+    cursor: grab;
+  }
+
+  .panning {
+    cursor: grab;
+  }
+
+  .pan-active {
+    cursor: grabbing;
   }
 
   @media (max-width: 767px) {

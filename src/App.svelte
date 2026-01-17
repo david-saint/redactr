@@ -18,6 +18,8 @@
   import DropZone from "./lib/components/DropZone.svelte";
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
   import DetectionPanel from "./lib/components/DetectionPanel.svelte";
+  import ZoomControls from "./lib/components/ZoomControls.svelte";
+  import { zoomStore } from "./lib/stores/zoom";
   import {
     cleanup as cleanupDetection,
     cancelDetection,
@@ -76,12 +78,39 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // Undo/Redo
     if ((e.metaKey || e.ctrlKey) && e.key === "z") {
       e.preventDefault();
       if (e.shiftKey) {
         handleRedo();
       } else {
         handleUndo();
+      }
+      return;
+    }
+
+    // Zoom shortcuts (only when image is loaded)
+    if ($hasImage && (e.metaKey || e.ctrlKey)) {
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        zoomStore.zoomIn();
+      } else if (e.key === "-") {
+        e.preventDefault();
+        zoomStore.zoomOut();
+      } else if (e.key === "0") {
+        e.preventDefault();
+        zoomStore.reset();
+      }
+    }
+
+    // Tool shortcuts (only when image is loaded, no modifier keys)
+    if ($hasImage && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === "h" || e.key === "H") {
+        e.preventDefault();
+        settingsStore.switchToHandTool();
+      } else if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        settingsStore.switchToRedactTool();
       }
     }
   }
@@ -92,6 +121,7 @@
     historyStore.clear();
     detectionStore.clearResults();
     detectionStore.closePanel();
+    zoomStore.reset();
   }
 
   // Handle applying redactions from detection panel
@@ -115,7 +145,7 @@
           style: $settingsStore.style,
           intensity: $settingsStore.intensity,
           color: $settingsStore.fillColor,
-        }
+        },
       );
 
       // Push to history
@@ -139,14 +169,14 @@
   onMount(() => {
     document.addEventListener(
       "applyRedactions",
-      handleApplyRedactions as EventListener
+      handleApplyRedactions as EventListener,
     );
   });
 
   onDestroy(() => {
     document.removeEventListener(
       "applyRedactions",
-      handleApplyRedactions as EventListener
+      handleApplyRedactions as EventListener,
     );
     cleanupDetection();
   });
@@ -193,6 +223,7 @@
 
     <div class="header-center">
       {#if $hasImage}
+        <ZoomControls />
         <div class="history-controls">
           <button
             on:click={handleUndo}
@@ -258,9 +289,13 @@
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path d="M11 8v6M8 11h6" />
-            <circle cx="11" cy="11" r="8" />
-            <path d="M21 21l-4.35-4.35" />
+            <path
+              d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"
+            />
+            <path d="m5 3 1 1" />
+            <path d="m19 21 1 1" />
+            <path d="m5 21 1-1" />
+            <path d="m19 3 1-1" />
           </svg>
           {#if $detectionCounts.total > 0}
             <span class="badg-dot"></span>
