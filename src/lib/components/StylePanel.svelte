@@ -10,6 +10,26 @@
 
   let exporting = false;
 
+  async function tryNativeEyeDropper(): Promise<string | null> {
+    if (!('EyeDropper' in window)) return null;
+    try {
+      const eyeDropper = new (window as any).EyeDropper();
+      const result = await eyeDropper.open();
+      return result.sRGBHex;
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleEyedropperClick() {
+    const nativeColor = await tryNativeEyeDropper();
+    if (nativeColor) {
+      settingsStore.setFillColor(nativeColor);
+    } else {
+      settingsStore.enterEyedropperMode();
+    }
+  }
+
   async function handleExport(format: 'png' | 'jpeg') {
     const current = $imageStore.current;
     if (!current) return;
@@ -100,6 +120,21 @@
           value={$settingsStore.fillColor}
           on:input={(e) => settingsStore.setFillColor(e.currentTarget.value)}
         />
+        <button
+          class="eyedropper-btn"
+          class:active={$settingsStore.eyedropperMode}
+          on:click={handleEyedropperClick}
+          aria-label="Pick color from canvas"
+          title="Pick color from canvas"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 22L12 12"/>
+            <path d="M6.5 17.5L3 21"/>
+            <path d="M12 12L16 8"/>
+            <path d="M20 4C18.5 2.5 16 2.5 14.5 4L12 6.5L15 9.5L17.5 7C19 5.5 19 3.5 20 4Z"/>
+            <path d="M16 8L19 11"/>
+          </svg>
+        </button>
         <div class="color-presets">
           <button
             class="color-preset"
@@ -237,6 +272,33 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+  }
+
+  .eyedropper-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    border: 2px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+
+  .eyedropper-btn:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .eyedropper-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
   }
 
   .color-presets {
