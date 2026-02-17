@@ -6,11 +6,13 @@ export type RedactionStyle = 'solid' | 'pixelate' | 'blur';
 
 export interface Settings {
   tool: Tool;
-  lastRedactTool: RedactTool; // Remember last used redact tool for V shortcut
+  lastRedactTool: RedactTool;
   style: RedactionStyle;
-  intensity: number; // 1-100, maps to block size or blur radius
-  brushSize: number; // 5-100px
-  fillColor: string; // For solid fill
+  intensity: number;
+  brushSize: number;
+  fillColor: string;
+  eyedropperMode: boolean;
+  toolBeforeEyedropper: Tool | null;
 }
 
 const initialSettings: Settings = {
@@ -19,7 +21,9 @@ const initialSettings: Settings = {
   style: 'solid',
   intensity: 50,
   brushSize: 20,
-  fillColor: '#000000'
+  fillColor: '#000000',
+  eyedropperMode: false,
+  toolBeforeEyedropper: null
 };
 
 function createSettingsStore() {
@@ -39,6 +43,20 @@ function createSettingsStore() {
     setIntensity: (intensity: number) => update(s => ({ ...s, intensity: Math.max(1, Math.min(100, intensity)) })),
     setBrushSize: (brushSize: number) => update(s => ({ ...s, brushSize: Math.max(5, Math.min(100, brushSize)) })),
     setFillColor: (fillColor: string) => update(s => ({ ...s, fillColor })),
+    enterEyedropperMode: () => update(s => ({
+      ...s,
+      eyedropperMode: true,
+      toolBeforeEyedropper: s.tool
+    })),
+    exitEyedropperMode: () => update(s => ({
+      ...s,
+      eyedropperMode: false,
+      tool: s.toolBeforeEyedropper ?? s.tool
+    })),
+    cancelEyedropperMode: () => update(s => ({
+      ...s,
+      eyedropperMode: false
+    })),
     reset: () => set(initialSettings)
   };
 }

@@ -309,6 +309,20 @@
     };
   }
 
+  function pickColorAt(x: number, y: number): string {
+    if (!ctx || !$imageStore.current) return '#000000';
+    
+    const clampedX = Math.max(0, Math.min(Math.floor(x), canvasWidth - 1));
+    const clampedY = Math.max(0, Math.min(Math.floor(y), canvasHeight - 1));
+    
+    const pixel = ctx.getImageData(clampedX, clampedY, 1, 1).data;
+    const r = pixel[0];
+    const g = pixel[1];
+    const b = pixel[2];
+    
+    return '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('');
+  }
+
   // Wheel zoom handler
   function handleWheel(e: WheelEvent) {
     e.preventDefault();
@@ -326,6 +340,10 @@
       e.preventDefault();
       isPanMode = true;
       zoomStore.setPanning(true);
+    }
+    if (e.code === 'Escape' && $settingsStore.eyedropperMode) {
+      e.preventDefault();
+      settingsStore.cancelEyedropperMode();
     }
   }
 
@@ -354,6 +372,14 @@
   }
 
   function handleMouseDown(e: MouseEvent) {
+    if ($settingsStore.eyedropperMode) {
+      const coords = getCanvasCoords(e);
+      const color = pickColorAt(coords.x, coords.y);
+      settingsStore.setFillColor(color);
+      settingsStore.exitEyedropperMode();
+      return;
+    }
+
     // Middle mouse button for pan
     if (e.button === 1) {
       e.preventDefault();
@@ -467,6 +493,15 @@
 
   // Touch event handlers for mobile
   function handleTouchStart(e: TouchEvent) {
+    if ($settingsStore.eyedropperMode) {
+      e.preventDefault();
+      const coords = getTouchCoords(e);
+      const color = pickColorAt(coords.x, coords.y);
+      settingsStore.setFillColor(color);
+      settingsStore.exitEyedropperMode();
+      return;
+    }
+
     // Pinch-to-zoom with 2 fingers
     if (e.touches.length === 2) {
       e.preventDefault();
@@ -665,9 +700,10 @@
       width={canvasWidth}
       height={canvasHeight}
       class="overlay-canvas"
-      class:rect-cursor={$settingsStore.tool === "rect" && !$zoomStore.isPanning}
-      class:brush-cursor={$settingsStore.tool === "brush" && !$zoomStore.isPanning}
-      class:hand-cursor={$settingsStore.tool === "hand" && !panStart}
+      class:rect-cursor={$settingsStore.tool === "rect" && !$zoomStore.isPanning && !$settingsStore.eyedropperMode}
+      class:brush-cursor={$settingsStore.tool === "brush" && !$zoomStore.isPanning && !$settingsStore.eyedropperMode}
+      class:eyedropper-cursor={$settingsStore.eyedropperMode}
+      class:hand-cursor={$settingsStore.tool === "hand" && !panStart && !$settingsStore.eyedropperMode}
       class:panning={$zoomStore.isPanning && $settingsStore.tool !== "hand"}
       class:pan-active={panStart !== null}
       on:mousedown={handleMouseDown}
@@ -723,6 +759,10 @@
   }
 
   .brush-cursor {
+    cursor: crosshair;
+  }
+
+  .eyedropper-cursor {
     cursor: crosshair;
   }
 
