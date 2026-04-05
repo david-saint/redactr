@@ -3,12 +3,22 @@ import type {
   SOTAState,
   LoopStatus,
   LoopIteration,
+  SOTABackend,
+  LocalModelState,
 } from "../detection/sota/types";
 
 const SESSION_STORAGE_KEY = "redactr_openrouter_api_key";
 
+const localModelState: LocalModelState = {
+  status: "idle",
+  modelName: null,
+  error: null,
+};
+
 const initialState: SOTAState = {
   apiKey: null,
+  backend: "openrouter",
+  localModel: localModelState,
   targetScore: 0.7,
   maxSteps: 5,
   isRunning: false,
@@ -61,6 +71,55 @@ function createSOTAStore() {
         apiKey: null,
         isRunning: false,
         status: "idle",
+      }));
+    },
+
+    setBackend: (backend: SOTABackend) => {
+      update((state) => ({
+        ...state,
+        backend,
+        error: null,
+      }));
+    },
+
+    setLocalModelLoading: (modelName: string | null) => {
+      update((state) => ({
+        ...state,
+        error: null,
+        localModel: {
+          status: "loading",
+          modelName,
+          error: null,
+        },
+      }));
+    },
+
+    setLocalModelReady: (modelName: string) => {
+      update((state) => ({
+        ...state,
+        localModel: {
+          status: "ready",
+          modelName,
+          error: null,
+        },
+      }));
+    },
+
+    setLocalModelError: (error: string, modelName?: string | null) => {
+      update((state) => ({
+        ...state,
+        localModel: {
+          status: "error",
+          modelName: modelName ?? state.localModel.modelName,
+          error,
+        },
+      }));
+    },
+
+    resetLocalModel: () => {
+      update((state) => ({
+        ...state,
+        localModel: localModelState,
       }));
     },
 
@@ -136,11 +195,14 @@ function createSOTAStore() {
     },
 
     reset: () => {
-      const apiKey = loadApiKeyFromSession();
-      set({
+      update((state) => ({
         ...initialState,
-        apiKey,
-      });
+        apiKey: loadApiKeyFromSession(),
+        backend: state.backend,
+        localModel: state.localModel,
+        targetScore: state.targetScore,
+        maxSteps: state.maxSteps,
+      }));
     },
 
     getState: () => get({ subscribe }),
@@ -154,10 +216,27 @@ export const hasApiKey = derived(
   sotaStore,
   ($sota) => $sota.apiKey !== null && $sota.apiKey.length > 0,
 );
+export const isOpenRouterBackend = derived(
+  sotaStore,
+  ($sota) => $sota.backend === "openrouter",
+);
+export const isLocalGemmaBackend = derived(
+  sotaStore,
+  ($sota) => $sota.backend === "gemma4_e2b_local",
+);
+export const isLocalModelReady = derived(
+  sotaStore,
+  ($sota) => $sota.localModel.status === "ready",
+);
 export const canStartLoop = derived(
   sotaStore,
   ($sota) =>
-    $sota.apiKey !== null && $sota.apiKey.length > 0 && !$sota.isRunning,
+    (($sota.backend === "openrouter" &&
+      $sota.apiKey !== null &&
+      $sota.apiKey.length > 0) ||
+      ($sota.backend === "gemma4_e2b_local" &&
+        $sota.localModel.status === "ready")) &&
+    !$sota.isRunning,
 );
 export const loopProgress = derived(sotaStore, ($sota) => ({
   step: $sota.currentStep,

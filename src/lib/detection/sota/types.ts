@@ -54,6 +54,16 @@ export interface LoopIteration {
   timestamp: number;
 }
 
+export type SOTABackend = "openrouter" | "gemma4_e2b_local";
+
+export type LocalModelStatus = "idle" | "loading" | "ready" | "error";
+
+export interface LocalModelState {
+  status: LocalModelStatus;
+  modelName: string | null;
+  error: string | null;
+}
+
 /** Possible loop statuses */
 export type LoopStatus =
   | "idle"
@@ -68,6 +78,8 @@ export type LoopStatus =
 /** SOTA store state */
 export interface SOTAState {
   apiKey: string | null;
+  backend: SOTABackend;
+  localModel: LocalModelState;
   targetScore: number; // 0.0-1.0, default 0.7
   maxSteps: number; // default 5
   isRunning: boolean;

@@ -17,6 +17,7 @@ import type { Detection } from "./types";
 
 let faceDetector: FaceDetector | null = null;
 let isInitializing = false;
+let currentDelegate: "GPU" | "CPU" = "GPU";
 
 // Progress callback type
 type ProgressCallback = (progress: number, stage: string) => void;
@@ -41,18 +42,34 @@ export async function initFaceDetector(
 
     onProgress?.(50, "Initializing face detector (~260KB)...");
 
-    // Create the face detector
-    faceDetector = await FaceDetector.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-        delegate: "GPU", // Use GPU if available, falls back to CPU
-      },
-      runningMode: "IMAGE",
-      minDetectionConfidence: 0.3,
-    });
+    // Create the face detector. GPU can fail when another local model is holding
+    // most of the browser's graphics memory, so fall back to CPU explicitly.
+    try {
+      currentDelegate = "GPU";
+      faceDetector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+          delegate: "GPU",
+        },
+        runningMode: "IMAGE",
+        minDetectionConfidence: 0.3,
+      });
+    } catch (gpuError) {
+      console.warn("Face detector GPU init failed, retrying on CPU", gpuError);
+      currentDelegate = "CPU";
+      faceDetector = await FaceDetector.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+          delegate: "CPU",
+        },
+        runningMode: "IMAGE",
+        minDetectionConfidence: 0.3,
+      });
+    }
 
-    onProgress?.(100, "Face detector ready");
+    onProgress?.(100, `Face detector ready (${currentDelegate})`);
   } finally {
     isInitializing = false;
   }
