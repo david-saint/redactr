@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import { isHeicFile, decodeHeic } from '../heic';
 
 export interface ImageState {
   original: ImageData | null;
@@ -16,49 +17,65 @@ const initialState: ImageState = {
   name: ''
 };
 
+function decodeImageFile(file: File): Promise<ImageData> {
+  return new Promise<ImageData>((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, img.width, img.height);
+
+      URL.revokeObjectURL(url);
+      resolve(imageData);
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load image'));
+    };
+
+    img.src = url;
+  });
+}
+
 function createImageStore() {
   const { subscribe, set, update } = writable<ImageState>(initialState);
 
   return {
     subscribe,
     load: async (file: File) => {
-      return new Promise<void>((resolve, reject) => {
-        const img = new Image();
-        const url = URL.createObjectURL(file);
+      let imageData: ImageData;
 
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d')!;
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+      if (isHeicFile(file)) {
+        try {
+          imageData = await decodeHeic(file);
+        } catch {
+          // Mislabeled file or unsupported HEIC variant — the browser's
+          // native decoder (e.g. Safari) may still handle it.
+          imageData = await decodeImageFile(file);
+        }
+      } else {
+        imageData = await decodeImageFile(file);
+      }
 
-          // Create a copy for current state
-          const currentData = new ImageData(
-            new Uint8ClampedArray(imageData.data),
-            img.width,
-            img.height
-          );
+      // Create a copy for current state
+      const currentData = new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height
+      );
 
-          set({
-            original: imageData,
-            current: currentData,
-            width: img.width,
-            height: img.height,
-            name: file.name
-          });
-
-          URL.revokeObjectURL(url);
-          resolve();
-        };
-
-        img.onerror = () => {
-          URL.revokeObjectURL(url);
-          reject(new Error('Failed to load image'));
-        };
-
-        img.src = url;
+      set({
+        original: imageData,
+        current: currentData,
+        width: imageData.width,
+        height: imageData.height,
+        name: file.name
       });
     },
     updateCurrent: (imageData: ImageData) => {
