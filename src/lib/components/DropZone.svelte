@@ -1,5 +1,6 @@
 <script lang="ts">
   import { imageStore } from '../stores/image';
+  import { isHeicFile } from '../heic';
 
   let isDragging = false;
   let fileInput: HTMLInputElement;
@@ -39,7 +40,7 @@
   async function loadFile(file: File) {
     error = null;
 
-    if (!file.type.startsWith('image/')) {
+    if (!file.type.startsWith('image/') && !isHeicFile(file)) {
       error = 'Please select an image file';
       return;
     }
@@ -72,7 +73,7 @@
     <input
       bind:this={fileInput}
       type="file"
-      accept="image/*"
+      accept="image/*,.heic,.heif"
       on:change={handleFileSelect}
       class="visually-hidden"
     />
@@ -96,6 +97,7 @@
         <span>JPG</span>
         <span>WebP</span>
         <span>GIF</span>
+        <span>HEIC</span>
       </div>
 
       {#if error}

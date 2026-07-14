@@ -120,6 +120,57 @@ describe('imageStore', () => {
       expect(URL.revokeObjectURL).toHaveBeenCalled();
     });
 
+    it('should load HEIC files via the HEIC decoder', async () => {
+      vi.resetModules();
+
+      const decodeHeic = vi.fn(async () => new ImageData(64, 32));
+      vi.doMock('../../heic', () => ({
+        isHeicFile: (file: File) => file.name.endsWith('.heic'),
+        decodeHeic
+      }));
+
+      const module = await import('../image');
+      const store = module.imageStore;
+
+      const file = new File([''], 'photo.heic', { type: '' });
+      await store.load(file);
+
+      expect(decodeHeic).toHaveBeenCalledWith(file);
+      const state = get(store);
+      expect(state.width).toBe(64);
+      expect(state.height).toBe(32);
+      expect(state.name).toBe('photo.heic');
+      expect(state.original).not.toBe(state.current);
+
+      vi.doUnmock('../../heic');
+    });
+
+    it('should fall back to native decoding when HEIC decode fails', async () => {
+      vi.resetModules();
+
+      const decodeHeic = vi.fn(async () => {
+        throw new Error('HEIF processing error');
+      });
+      vi.doMock('../../heic', () => ({
+        isHeicFile: (file: File) => file.name.endsWith('.heic'),
+        decodeHeic
+      }));
+
+      const module = await import('../image');
+      const store = module.imageStore;
+
+      const file = new File([''], 'photo.heic', { type: '' });
+      await store.load(file);
+
+      expect(decodeHeic).toHaveBeenCalled();
+      const state = get(store);
+      // Falls back to the mocked Image element path (100x100)
+      expect(state.width).toBe(100);
+      expect(state.height).toBe(100);
+
+      vi.doUnmock('../../heic');
+    });
+
     it('should reject on image load error', async () => {
       vi.resetModules();
       

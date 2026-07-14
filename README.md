@@ -18,6 +18,7 @@ Redactr is a powerful, minimalist tool designed to help you shield sensitive inf
 - 🔒 **100% Local & Private** - All image processing happens in your browser via Rust/WASM. No servers, no uploads, no tracking.
 - 🌫️ **Professional Redaction Styles** - Choose between **Gaussian Blur**, **Pixelation**, and **Solid Fill** to best suit your needs.
 - 🖌️ **Precise Selection Tools** - Use the **Rectangle Tool** for quick blocks or the **Brush Tool** for freehand redaction.
+- 📱 **iPhone Photo Ready** - Opens **HEIC/HEIF** photos in any browser, decoded locally via WebAssembly — alongside PNG, JPG, WebP, and GIF.
 - 📶 **PWA & Offline Support** - Install Redactr on your desktop or mobile device. Once loaded, it works entirely offline.
 - 🎨 **Minimalist Aesthetic** - A clean, distraction-free interface with full support for **Light**, **Dark**, and **System** themes.
 - 🔄 **Non-Destructive Editing** - Full **Undo/Redo** history stack with standard keyboard shortcuts (`Ctrl+Z`, `Ctrl+Shift+Z`).
