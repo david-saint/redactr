@@ -40,6 +40,21 @@ export default defineConfig({
         globPatterns: ["**/*.{js,css,html,svg,png,wasm}"],
         runtimeCaching: [
           {
+            // Cache MediaPipe GenAI WASM runtime
+            urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/@mediapipe\/tasks-genai/,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "mediapipe-genai-wasm",
+              expiration: {
+                maxEntries: 20,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+              },
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+            },
+          },
+          {
             // Cache MediaPipe WASM and model files
             urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/@mediapipe/,
             handler: "CacheFirst",

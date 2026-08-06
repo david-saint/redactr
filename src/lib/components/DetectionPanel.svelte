@@ -10,8 +10,21 @@
   import { imageStore } from "../stores/image";
   import { startDetection, cancelDetection } from "../detection/manager";
   import { fade } from "svelte/transition";
-  import { sotaStore, hasApiKey, canStartLoop, loopProgress } from "../stores/sota";
+  import {
+    sotaStore,
+    hasApiKey,
+    canStartLoop,
+    loopProgress,
+    isOpenRouterBackend,
+    isLocalGemmaBackend,
+    isLocalModelReady,
+  } from "../stores/sota";
   import { startRalphLisaLoop, cancelRalphLisaLoop } from "../detection/sota";
+  import {
+    isLocalGemmaAvailable,
+    loadLocalGemmaModel,
+    unloadLocalGemmaModel,
+  } from "../detection/sota/gemma-local";
 
   // Detection mode: null = not selected yet, "edge" = on-device, "sota" = cloud-based
   type DetectionMode = "edge" | "sota" | null;
@@ -70,9 +83,6 @@
   }
 
   function handleModeSelect(mode: DetectionMode) {
-    if (mode === "sota") {
-      showToast();
-    }
     selectedMode = mode;
   }
 
@@ -136,6 +146,7 @@
   // SOTA-specific state
   let apiKeyInput = "";
   let showIterationHistory = false;
+  let localModelInput: HTMLInputElement | null = null;
 
   const maxStepsOptions = [3, 5, 7, 10];
 
@@ -148,6 +159,38 @@
 
   function handleDisconnectApi() {
     sotaStore.clearApiKey();
+  }
+
+  async function handleLocalModelSelected(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+
+    if (!file) return;
+
+    try {
+      await loadLocalGemmaModel(file);
+    } catch (error) {
+      console.error("Failed to load local Gemma model:", error);
+    } finally {
+      input.value = "";
+    }
+  }
+
+  function handleChooseLocalModel() {
+    localModelInput?.click();
+  }
+
+  function handleUnloadLocalModel() {
+    unloadLocalGemmaModel();
+  }
+
+  function handleSelectSOTABackend(backend: "openrouter" | "gemma4_e2b_local") {
+    sotaStore.setBackend(backend);
+    if (backend === "openrouter") {
+      showToast();
+    } else {
+      dismissToast();
+    }
   }
 
   function handleStartSOTA() {
@@ -182,12 +225,27 @@
 
   $: sotaHasResults = $sotaStore.iterations.length > 0 && !$sotaStore.isRunning;
   $: sotaIsSuccess = $sotaStore.status === "completed";
+  $: localGemmaSupported = isLocalGemmaAvailable();
 </script>
 
 {#if $detectionStore.isPanelOpen}
   <div class="detection-panel">
     <div class="panel-header">
-      <h3>AI Detection</h3>
+      <div class="panel-header-main">
+        {#if selectedMode === "sota"}
+          <button class="header-back-btn" on:click={handleBackToModeSelection} aria-label="Back to mode selection">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m15 18-6-6 6-6"/>
+            </svg>
+          </button>
+        {/if}
+        <div class="panel-title-stack">
+          <h3>{selectedMode === "sota" ? "Lisa/Ralph" : "AI Detection"}</h3>
+          {#if selectedMode === "sota"}
+            <p class="panel-subtitle">Iterative privacy loop</p>
+          {/if}
+        </div>
+      </div>
       <button
         class="icon-only ghost"
         on:click={handleClosePanel}
@@ -206,53 +264,84 @@
             class="mode-option"
             on:click={() => handleModeSelect("edge")}
           >
-            <div class="mode-icon">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
-                <path d="M12 18h.01"/>
-              </svg>
+            <div class="mode-option-row">
+              <div class="mode-icon-shell">
+                <div class="mode-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+                    <path d="M12 18h.01"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="mode-copy">
+                <span class="mode-name">Edge</span>
+                <span class="mode-description">Private, offline auto-detection.</span>
+              </div>
+              <span class="mode-badge private">Local</span>
             </div>
-            <span class="mode-name">EDGE</span>
-            <span class="mode-description">On-device processing. Private & offline.</span>
-            <span class="mode-badge private">Private</span>
           </button>
           <button
             class="mode-option"
             on:click={() => handleModeSelect("sota")}
           >
-            <div class="mode-icon">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
-              </svg>
+            <div class="mode-option-row">
+              <div class="mode-icon-shell">
+                <div class="mode-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="mode-copy">
+                <span class="mode-name">Lisa/Ralph</span>
+                <span class="mode-description">Iterative privacy loop.</span>
+              </div>
+              <span class="mode-badge cloud">Advanced</span>
             </div>
-            <span class="mode-name">SOTA</span>
-            <span class="mode-description">Cloud-based. State-of-the-art accuracy.</span>
-            <span class="mode-badge cloud">Cloud</span>
           </button>
         </div>
       </div>
     {:else if selectedMode === "sota"}
       <!-- SOTA Mode Content -->
       <div class="sota-content">
-        <button class="back-button" on:click={handleBackToModeSelection}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m15 18-6-6 6-6"/>
-          </svg>
-          Back
-        </button>
+        <div class="sota-backend-picker">
+          <button
+            class="backend-tab"
+            class:selected={$isOpenRouterBackend}
+            on:click={() => handleSelectSOTABackend("openrouter")}
+          >
+            OpenRouter
+          </button>
+          <button
+            class="backend-tab"
+            class:selected={$isLocalGemmaBackend}
+            on:click={() => handleSelectSOTABackend("gemma4_e2b_local")}
+          >
+            Local E2B
+          </button>
+        </div>
+        <p class="sota-backend-caption">
+          {$isOpenRouterBackend
+            ? "Cloud-hosted Lisa/Ralph models. Your image leaves the device."
+            : "Experimental local Gemma 4 E2B reviewer using on-device detector proposals."}
+        </p>
 
-        {#if !$hasApiKey}
+        {#if $isOpenRouterBackend && !$hasApiKey}
           <!-- State A: No API Key -->
           <div class="sota-section">
-            <div class="sota-icon-header">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-              </svg>
+            <div class="sota-state-header">
+              <div class="sota-icon-header compact">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+                </svg>
+              </div>
+              <div class="sota-state-copy">
+                <h4>Connect OpenRouter</h4>
+                <p class="sota-description">
+                  Use your API key for the hosted Lisa/Ralph models.
+                </p>
+              </div>
             </div>
-            <h4>Connect OpenRouter</h4>
-            <p class="sota-description">
-              Enter your API key to enable AI-powered privacy detection.
-            </p>
             <div class="api-key-form">
               <input
                 type="password"
@@ -284,12 +373,70 @@
             </a>
           </div>
 
+        {:else if $isLocalGemmaBackend && !$isLocalModelReady && !$sotaStore.isRunning}
+          <div class="sota-section">
+            <div class="sota-state-header">
+              <div class="sota-icon-header compact">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2v4"/>
+                  <path d="M12 18v4"/>
+                  <path d="m4.93 4.93 2.83 2.83"/>
+                  <path d="m16.24 16.24 2.83 2.83"/>
+                  <path d="M2 12h4"/>
+                  <path d="M18 12h4"/>
+                  <path d="m4.93 19.07 2.83-2.83"/>
+                  <path d="m16.24 7.76 2.83-2.83"/>
+                </svg>
+              </div>
+              <div class="sota-state-copy">
+                <h4>Load Local Gemma 4 E2B</h4>
+                <p class="sota-description">
+                  Choose a local Gemma 4 E2B web model file for the text-only Lisa/Ralph reviewer.
+                </p>
+              </div>
+            </div>
+
+            <div class="local-model-callout" class:warning={!localGemmaSupported}>
+              <p>{localGemmaSupported
+                ? "Requires Chrome-class WebGPU support and several GB of free GPU/CPU memory."
+                : "This device/browser does not expose WebGPU, so the local Gemma prototype is unavailable."}</p>
+              <p>Recommended file: `gemma-4-E2B-it-web.task`. This path uses local detectors for regions, then asks Gemma to score and plan redactions from those findings.</p>
+            </div>
+
+            <input
+              bind:this={localModelInput}
+              type="file"
+              accept=".task,.litertlm"
+              class="visually-hidden"
+              on:change={handleLocalModelSelected}
+            />
+
+            <button
+              class="btn-primary btn-start"
+              on:click={handleChooseLocalModel}
+              disabled={!localGemmaSupported || $sotaStore.localModel.status === "loading"}
+            >
+              {$sotaStore.localModel.status === "loading" ? "Loading model..." : "Choose Local Model"}
+            </button>
+
+            {#if $sotaStore.localModel.modelName}
+              <p class="local-model-name">Current file: {$sotaStore.localModel.modelName}</p>
+            {/if}
+
+            {#if $sotaStore.localModel.error}
+              <p class="local-model-error">{$sotaStore.localModel.error}</p>
+            {/if}
+          </div>
+
         {:else if $sotaStore.isRunning}
           <!-- State C: Running -->
           <div class="sota-section">
             <div class="sota-progress">
               <div class="step-indicator">
                 Step {$loopProgress.step} of {$loopProgress.maxSteps}
+              </div>
+              <div class="active-backend-label">
+                {$isLocalGemmaBackend ? "Local Gemma 4 E2B" : "OpenRouter"}
               </div>
               <div class="score-display">
                 <span class="current-score">{formatScore($loopProgress.score)}</span>
@@ -381,9 +528,15 @@
               <button class="btn-primary" on:click={handleRunAgain}>
                 Run Again
               </button>
-              <button class="btn-text" on:click={handleDisconnectApi}>
-                Disconnect API
-              </button>
+              {#if $isOpenRouterBackend}
+                <button class="btn-text" on:click={handleDisconnectApi}>
+                  Disconnect API
+                </button>
+              {:else}
+                <button class="btn-text" on:click={handleUnloadLocalModel}>
+                  Unload Model
+                </button>
+              {/if}
             </div>
           </div>
 
@@ -409,6 +562,16 @@
         {:else}
           <!-- State B: Configuration (idle) -->
           <div class="sota-section">
+            <div class="backend-status-card">
+              <span class="backend-status-label">Active backend</span>
+              <strong>{$isLocalGemmaBackend ? "Local Gemma 4 E2B" : "OpenRouter"}</strong>
+              <p>
+                {$isLocalGemmaBackend
+                  ? `Model: ${$sotaStore.localModel.modelName ?? "not loaded"}`
+                  : "Uses your OpenRouter API key for Lisa/Ralph vision calls."}
+              </p>
+            </div>
+
             <div class="config-group">
               <label class="config-label" for="target-score-slider">Target Privacy Score</label>
               <div class="slider-container">
@@ -454,9 +617,15 @@
               {/if}
             </button>
 
-            <button class="btn-text disconnect-link" on:click={handleDisconnectApi}>
-              Disconnect API
-            </button>
+            {#if $isOpenRouterBackend}
+              <button class="btn-text disconnect-link" on:click={handleDisconnectApi}>
+                Disconnect API
+              </button>
+            {:else}
+              <button class="btn-text disconnect-link" on:click={handleUnloadLocalModel}>
+                Unload Model
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -676,7 +845,7 @@
     {/if}
 
     <!-- Privacy Warning Toast -->
-    {#if showPrivacyToast}
+    {#if showPrivacyToast && selectedMode === "sota" && $isOpenRouterBackend}
       <div class="toast-container" transition:fade={{ duration: 200 }}>
         <div class="toast warning">
           <div class="toast-icon">
@@ -751,21 +920,37 @@
   .mode-option {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-4);
+    padding: var(--space-3);
     background: var(--bg-tertiary);
     border: 2px solid var(--border);
     border-radius: var(--radius-lg);
     cursor: pointer;
     transition: all 0.2s ease;
-    text-align: center;
+    text-align: left;
   }
 
   .mode-option:hover {
     border-color: var(--accent);
     background: var(--bg-elevated);
     transform: translateY(-2px);
+  }
+
+  .mode-option-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+  }
+
+  .mode-icon-shell {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    flex-shrink: 0;
   }
 
   .mode-icon {
@@ -776,24 +961,34 @@
     color: var(--accent);
   }
 
+  .mode-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
   .mode-name {
-    font-size: 1.125rem;
+    font-size: 0.9375rem;
     font-weight: 600;
     color: var(--text-primary);
   }
 
   .mode-description {
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
+    line-height: 1.35;
   }
 
   .mode-badge {
     font-size: 0.6875rem;
     font-weight: 600;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-md);
+    padding: 5px 8px;
+    border-radius: 999px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    flex-shrink: 0;
   }
 
   .mode-badge.private {
@@ -806,32 +1001,123 @@
     color: var(--warning, #eab308);
   }
 
-  /* Back Button */
-  .back-button {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    margin: var(--space-3) var(--space-4);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    color: var(--text-secondary);
-    font-size: 0.8125rem;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .back-button:hover {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border-color: var(--border-strong);
-  }
-
   /* SOTA Content */
   .sota-content {
     display: flex;
     flex-direction: column;
+  }
+
+  .sota-backend-picker {
+    display: flex;
+    gap: var(--space-2);
+    padding: 0 var(--space-4);
+  }
+
+  .backend-tab {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: all 0.15s ease;
+  }
+
+  .backend-tab:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-elevated);
+  }
+
+  .backend-tab.selected {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+  }
+
+  .sota-backend-caption {
+    margin: var(--space-2) var(--space-4) 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .backend-status-card,
+  .local-model-callout {
+    width: 100%;
+    padding: var(--space-3);
+    margin-bottom: var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .backend-status-card strong {
+    display: block;
+    margin-bottom: var(--space-1);
+    color: var(--text-primary);
+  }
+
+  .backend-status-card p,
+  .local-model-callout p {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+
+  .local-model-callout {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .local-model-callout.warning {
+    border-color: var(--warning, #eab308);
+    background: color-mix(in srgb, var(--warning, #eab308) 10%, var(--bg-tertiary));
+  }
+
+  .backend-status-label,
+  .active-backend-label {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .active-backend-label {
+    margin-bottom: var(--space-2);
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .local-model-name,
+  .local-model-error {
+    margin: var(--space-2) 0 0 0;
+    width: 100%;
+    font-size: 0.75rem;
+    text-align: left;
+  }
+
+  .local-model-name {
+    color: var(--text-muted);
+    word-break: break-all;
+  }
+
+  .local-model-error {
+    color: var(--danger, #ef4444);
   }
 
   /* Consent Dialog */
@@ -1332,25 +1618,47 @@
     padding: var(--space-4);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    text-align: center;
+    align-items: stretch;
+    text-align: left;
   }
 
   .sota-section h4 {
     margin: 0 0 var(--space-2) 0;
-    font-size: 1.125rem;
+    font-size: 1rem;
     color: var(--text-primary);
   }
 
   .sota-icon-header {
     color: var(--accent);
-    margin-bottom: var(--space-3);
+  }
+
+  .sota-icon-header.compact {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    flex-shrink: 0;
   }
 
   .sota-description {
-    margin: 0 0 var(--space-4) 0;
+    margin: 0;
     color: var(--text-secondary);
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+
+  .sota-state-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .sota-state-copy {
+    min-width: 0;
   }
 
   .api-key-form {
@@ -1734,6 +2042,10 @@
 
   /* Mobile SOTA adjustments */
   @media (max-width: 767px) {
+    .sota-backend-picker {
+      grid-template-columns: 1fr;
+    }
+
     .api-key-form {
       flex-direction: column;
     }

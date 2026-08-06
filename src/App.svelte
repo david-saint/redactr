@@ -24,6 +24,7 @@
     cleanup as cleanupDetection,
     cancelDetection,
   } from "./lib/detection/manager";
+  import { unloadLocalGemmaModel } from "./lib/detection/sota/gemma-local";
 
   let wasmReady = false;
   let wasmError: string | null = null;
@@ -178,6 +179,7 @@
       "applyRedactions",
       handleApplyRedactions as EventListener,
     );
+    unloadLocalGemmaModel();
     cleanupDetection();
   });
 </script>

@@ -7,8 +7,18 @@ import { imageStore } from "../../stores/image";
 import { historyStore } from "../../stores/history";
 import { applyRectRedaction, type RedactionOptions } from "../../wasm/redactor";
 import { evaluateWithLisa } from "./lisa";
+import {
+  evaluateWithLocalGemmaLisa,
+  planWithLocalGemmaRalph,
+} from "./gemma-local";
 import { planWithRalph } from "./ralph";
-import { SOTAError, type LoopIteration, type RalphRedaction } from "./types";
+import {
+  SOTAError,
+  type LoopIteration,
+  type RalphRedaction,
+  type RalphPlan,
+  type LisaEvaluation,
+} from "./types";
 
 // AbortController for cancellation
 let currentAbortController: AbortController | null = null;
@@ -24,9 +34,16 @@ let currentAbortController: AbortController | null = null;
  */
 export async function startRalphLisaLoop(): Promise<void> {
   const state = sotaStore.getState();
+  let previousScore: number | null = null;
+  let stalledSteps = 0;
 
-  if (!state.apiKey) {
+  if (state.backend === "openrouter" && !state.apiKey) {
     sotaStore.setError("No API key configured");
+    return;
+  }
+
+  if (state.backend === "gemma4_e2b_local" && state.localModel.status !== "ready") {
+    sotaStore.setError("Load a local Gemma 4 E2B model first");
     return;
   }
 
@@ -60,13 +77,16 @@ export async function startRalphLisaLoop(): Promise<void> {
 
       // Step 1: Lisa evaluates
       sotaStore.updateStatus("evaluating");
-      const evaluation = await evaluateWithLisa(
-        state.apiKey!,
-        currentImage,
-        signal,
-      );
+      const evaluation = await runLisaEvaluation(state, currentImage, signal);
 
       sotaStore.setCurrentScore(evaluation.vaguenessScore);
+
+      if (previousScore !== null) {
+        const delta = evaluation.vaguenessScore - previousScore;
+        stalledSteps = delta < 0.03 ? stalledSteps + 1 : 0;
+      }
+
+      previousScore = evaluation.vaguenessScore;
 
       // Check if target reached
       if (evaluation.vaguenessScore >= state.targetScore) {
@@ -89,12 +109,7 @@ export async function startRalphLisaLoop(): Promise<void> {
 
       // Step 2: Ralph plans redactions
       sotaStore.updateStatus("planning");
-      const plan = await planWithRalph(
-        state.apiKey!,
-        currentImage,
-        evaluation,
-        signal,
-      );
+      const plan = await runRalphPlanning(state, currentImage, evaluation, signal);
 
       if (signal.aborted) {
         sotaStore.complete("cancelled");
@@ -115,10 +130,14 @@ export async function startRalphLisaLoop(): Promise<void> {
       };
       sotaStore.addIteration(iteration);
 
-      // If no redactions were applied, we might be stuck
-      if (appliedRedactions.length === 0 && step > 1) {
-        // Give it one more chance, but if still no progress, stop
-        console.warn("No redactions applied in step", step);
+      if (appliedRedactions.length === 0) {
+        sotaStore.complete("max_steps");
+        return;
+      }
+
+      if (stalledSteps >= 2) {
+        sotaStore.complete("max_steps");
+        return;
       }
     }
 
@@ -126,7 +145,7 @@ export async function startRalphLisaLoop(): Promise<void> {
     sotaStore.complete("max_steps");
   } catch (err) {
     if (err instanceof SOTAError) {
-      if (err.type === "auth") {
+      if (err.type === "auth" && state.backend === "openrouter") {
         // Clear invalid API key
         sotaStore.clearApiKey();
       }
@@ -143,6 +162,31 @@ export async function startRalphLisaLoop(): Promise<void> {
   } finally {
     currentAbortController = null;
   }
+}
+
+async function runLisaEvaluation(
+  state: ReturnType<typeof sotaStore.getState>,
+  imageData: ImageData,
+  signal?: AbortSignal,
+): Promise<LisaEvaluation> {
+  if (state.backend === "gemma4_e2b_local") {
+    return evaluateWithLocalGemmaLisa(imageData, signal);
+  }
+
+  return evaluateWithLisa(state.apiKey!, imageData, signal);
+}
+
+async function runRalphPlanning(
+  state: ReturnType<typeof sotaStore.getState>,
+  imageData: ImageData,
+  evaluation: LisaEvaluation,
+  signal?: AbortSignal,
+): Promise<RalphPlan> {
+  if (state.backend === "gemma4_e2b_local") {
+    return planWithLocalGemmaRalph(imageData, evaluation, signal);
+  }
+
+  return planWithRalph(state.apiKey!, imageData, evaluation, signal);
 }
 
 /**
