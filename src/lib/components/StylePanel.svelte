@@ -1,6 +1,8 @@
 <script lang="ts">
   import { settingsStore, type RedactionStyle } from '../stores/settings';
   import { imageStore } from '../stores/image';
+  import { documentStore, isPdf } from '../stores/document';
+  import { downloadBlob, redactedFileName } from '../download';
 
   const styles: { id: RedactionStyle; label: string; icon: string }[] = [
     { id: 'solid', label: 'Solid', icon: 'M4 4h16v16H4z' },
@@ -9,6 +11,7 @@
   ];
 
   let exporting = false;
+  let exportProgress = '';
 
   async function tryNativeEyeDropper(): Promise<string | null> {
     if (!('EyeDropper' in window)) return null;
@@ -54,15 +57,27 @@
         );
       });
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const baseName = $imageStore.name.replace(/\.[^.]+$/, '');
-      a.href = url;
-      a.download = `${baseName}-redacted.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const suffix = $isPdf ? `-page-${$documentStore.currentPage + 1}` : '';
+      downloadBlob(blob, redactedFileName($imageStore.name, format, suffix));
     } finally {
       exporting = false;
+    }
+  }
+
+  async function handleExportPdf() {
+    exporting = true;
+    exportProgress = '';
+
+    try {
+      const blob = await documentStore.exportPdf((done, total) => {
+        exportProgress = `${done}/${total}`;
+      });
+      downloadBlob(blob, redactedFileName($imageStore.name, 'pdf'));
+    } catch (e) {
+      console.error('Failed to export PDF:', e);
+    } finally {
+      exporting = false;
+      exportProgress = '';
     }
   }
 
@@ -179,6 +194,20 @@
 
   <div class="panel-section export-section">
     <span class="section-label">Export</span>
+    {#if $isPdf}
+      <button on:click={handleExportPdf} disabled={exporting} class="export-button primary pdf-export">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        {exportProgress ? `Exporting ${exportProgress}` : 'PDF'}
+      </button>
+      <p class="export-note">
+        Pages are flattened to images, so hidden text and metadata are removed.
+      </p>
+      <span class="export-sublabel">Current page</span>
+    {/if}
     <div class="export-options">
       <button on:click={() => handleExport('png')} disabled={exporting} class="export-button">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -343,6 +372,24 @@
     margin-top: auto;
     padding-top: var(--space-4);
     border-top: 1px solid var(--border);
+  }
+
+  .export-button.pdf-export {
+    flex-direction: row;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .export-note {
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    color: var(--text-muted);
+  }
+
+  .export-sublabel {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--text-muted);
   }
 
   .export-options {

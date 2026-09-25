@@ -48,7 +48,9 @@ pnpm run preview
 src/
 ├── lib/
 │   ├── components/      # Svelte components (Canvas, Toolbar, StylePanel, etc.)
-│   ├── stores/          # Svelte stores (image, history, settings, theme)
+│   ├── stores/          # Svelte stores (document, image, history, settings, theme)
+│   ├── pdf.ts           # PDF.js loading/rendering + minimal image-only PDF writer
+│   ├── redaction.ts     # replayCommands(): rebuild an image from history commands
 │   └── wasm/
 │       ├── redactor.ts  # TypeScript wrapper for WASM functions
 │       └── pkg/         # Generated WASM output (gitignored)
@@ -64,7 +66,8 @@ wasm/
 
 ### State Management
 
-- `imageStore`: Original and current image data (ImageData objects)
+- `documentStore`: The opened file (image or PDF). For PDFs it owns the PDF.js document, the current page index, and the undo stacks of pages that aren't on screen; `goToPage()` swaps the page into `imageStore`/`historyStore`, and `exportPdf()` replays each page's commands and writes a flattened PDF
+- `imageStore`: Original and current image data (ImageData objects) for the image or the current PDF page
 - `historyStore`: Command pattern for undo/redo - stores redaction operations, not full image copies
 - `settingsStore`: Active tool, redaction style, intensity, brush size, fill color
 - `theme`: Light/dark/system preference with localStorage persistence
@@ -77,6 +80,13 @@ The WASM module exports functions that mutate `Uint8ClampedArray` in place:
 - `brush_solid_fill()`, `brush_pixelate()` for freehand strokes
 
 TypeScript wrapper (`src/lib/wasm/redactor.ts`) handles initialization and provides typed interface.
+
+### PDF Support
+
+- Pages are rasterized with PDF.js (lazy-loaded, legacy build) at 2x, capped at 4096px on the longest side
+- Only one page is held in memory; switching pages re-renders it and restores that page's history
+- Export writes a new PDF (`buildImagePdf`) with one JPEG per page at the original page size — no text layer or metadata survives
+- PDF.js data files (CMaps, standard fonts, decoder WASM) are served from `/pdfjs/` by the `pdfjsAssets` plugin in `vite.config.ts` and runtime-cached by the service worker
 
 ### Canvas Rendering
 

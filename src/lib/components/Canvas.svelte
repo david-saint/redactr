@@ -18,6 +18,7 @@
     isWasmReady,
     wasmReady,
   } from "../wasm/redactor";
+  import { replayCommands } from "../redaction";
   import { zoomStore, MIN_ZOOM, MAX_ZOOM } from "../stores/zoom";
 
   // Detection type colors
@@ -146,43 +147,7 @@
   function rebuildImage(commands: RedactionCommand[]) {
     if (!$imageStore.original || !isWasmReady()) return;
 
-    // Start from original image
-    let currentData = new ImageData(
-      new Uint8ClampedArray($imageStore.original.data),
-      $imageStore.width,
-      $imageStore.height
-    );
-
-    // Replay all active commands
-    for (const cmd of commands) {
-      if (cmd.type === "rect" && cmd.region) {
-        currentData = applyRectRedaction(
-          currentData,
-          cmd.region.x,
-          cmd.region.y,
-          cmd.region.width,
-          cmd.region.height,
-          {
-            style: cmd.style,
-            intensity: cmd.intensity,
-            color: cmd.color,
-          }
-        );
-      } else if (cmd.type === "brush" && cmd.points) {
-        currentData = applyBrushRedaction(
-          currentData,
-          cmd.points,
-          cmd.brushSize || 20,
-          {
-            style: cmd.style,
-            intensity: cmd.intensity,
-            color: cmd.color,
-          }
-        );
-      }
-    }
-
-    imageStore.updateCurrent(currentData);
+    imageStore.updateCurrent(replayCommands($imageStore.original, commands));
     renderImage();
   }
 
