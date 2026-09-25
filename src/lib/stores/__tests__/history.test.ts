@@ -306,4 +306,63 @@ describe('historyStore', () => {
       expect(historyStore.getActiveCommands().length).toBe(0);
     });
   });
+
+  describe('snapshot and restore', () => {
+    const rect = {
+      type: 'rect',
+      style: 'solid',
+      region: { x: 0, y: 0, width: 10, height: 10 },
+      points: null,
+      intensity: 50,
+      color: '#000000'
+    };
+
+    it('should capture commands and current index', () => {
+      historyStore.push(rect);
+      historyStore.push(rect);
+      historyStore.undo();
+
+      const snapshot = historyStore.snapshot();
+      expect(snapshot.commands.length).toBe(2);
+      expect(snapshot.currentIndex).toBe(0);
+    });
+
+    it('should restore a snapshot including redo state', () => {
+      historyStore.push(rect);
+      historyStore.push(rect);
+      historyStore.undo();
+      const snapshot = historyStore.snapshot();
+
+      historyStore.clear();
+      historyStore.restore(snapshot);
+
+      expect(get(activeCommands).length).toBe(1);
+      expect(get(canUndo)).toBe(true);
+      expect(get(canRedo)).toBe(true);
+    });
+
+    it('should reset to an empty history when restoring null', () => {
+      historyStore.push(rect);
+      historyStore.restore(null);
+
+      const state = get(historyStore);
+      expect(state.commands).toEqual([]);
+      expect(state.currentIndex).toBe(-1);
+    });
+
+    it('should always bump the version so the canvas rebuilds', () => {
+      const before = get(historyStore).version;
+      historyStore.restore(null);
+      expect(get(historyStore).version).toBe(before + 1);
+    });
+
+    it('should not be affected by later changes to the restored stack', () => {
+      historyStore.push(rect);
+      const snapshot = historyStore.snapshot();
+      historyStore.restore(snapshot);
+      historyStore.push(rect);
+
+      expect(snapshot.commands.length).toBe(1);
+    });
+  });
 });

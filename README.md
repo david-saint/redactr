@@ -19,6 +19,7 @@ Redactr is a powerful, minimalist tool designed to help you shield sensitive inf
 - 🌫️ **Professional Redaction Styles** - Choose between **Gaussian Blur**, **Pixelation**, and **Solid Fill** to best suit your needs.
 - 🖌️ **Precise Selection Tools** - Use the **Rectangle Tool** for quick blocks or the **Brush Tool** for freehand redaction.
 - 📱 **iPhone Photo Ready** - Opens **HEIC/HEIF** photos in any browser, decoded locally via WebAssembly — alongside PNG, JPG, WebP, and GIF.
+- 📄 **PDF Redaction** - Open multi-page **PDFs**, redact each page (with its own undo history), and export a new PDF. Pages are flattened to images, so redacted text can't be selected or extracted, and the original metadata is dropped.
 - 📶 **PWA & Offline Support** - Install Redactr on your desktop or mobile device. Once loaded, it works entirely offline.
 - 🎨 **Minimalist Aesthetic** - A clean, distraction-free interface with full support for **Light**, **Dark**, and **System** themes.
 - 🔄 **Non-Destructive Editing** - Full **Undo/Redo** history stack with standard keyboard shortcuts (`Ctrl+Z`, `Ctrl+Shift+Z`).
@@ -60,6 +61,7 @@ pnpm preview
 
 - **Frontend**: [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/)
 - **Processing Engine**: [Rust](https://www.rust-lang.org/) + [WebAssembly](https://webassembly.org/)
+- **PDF Rendering**: [PDF.js](https://mozilla.github.io/pdf.js/) (`pdfjs-dist`), loaded on demand
 - **PWA**: `vite-plugin-pwa`
 - **Styling**: Vanilla CSS with custom properties
 

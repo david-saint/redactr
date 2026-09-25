@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { imageStore } from '../stores/image';
+  import { documentStore } from '../stores/document';
   import { isHeicFile } from '../heic';
+  import { isPdfFile, PdfPasswordError } from '../pdf';
 
   let isDragging = false;
   let fileInput: HTMLInputElement;
   let error: string | null = null;
+  let loading = false;
 
   function handleDragEnter(e: DragEvent) {
     e.preventDefault();
@@ -38,21 +40,34 @@
   }
 
   async function loadFile(file: File) {
+    if (loading) return;
     error = null;
 
-    if (!file.type.startsWith('image/') && !isHeicFile(file)) {
-      error = 'Please select an image file';
+    const pdf = isPdfFile(file);
+    if (!pdf && !file.type.startsWith('image/') && !isHeicFile(file)) {
+      error = 'Please select an image or PDF file';
       return;
     }
 
+    loading = true;
     try {
-      await imageStore.load(file);
+      await documentStore.open(file);
     } catch (e) {
-      error = 'Failed to load image';
+      console.error(e);
+      if (e instanceof PdfPasswordError) {
+        error = e.message;
+      } else {
+        error = pdf ? 'Failed to open PDF' : 'Failed to load image';
+      }
+    } finally {
+      loading = false;
+      // Allow selecting the same file again after an error
+      if (fileInput) fileInput.value = '';
     }
   }
 
   function handleClick() {
+    if (loading) return;
     fileInput.click();
   }
 </script>
@@ -61,6 +76,7 @@
   <div
     class="dropzone"
     class:dragging={isDragging}
+    class:loading
     on:dragenter={handleDragEnter}
     on:dragleave={handleDragLeave}
     on:dragover={handleDragOver}
@@ -68,12 +84,13 @@
     on:click={handleClick}
     role="button"
     tabindex="0"
+    aria-busy={loading}
     on:keydown={(e) => e.key === 'Enter' && handleClick()}
   >
     <input
       bind:this={fileInput}
       type="file"
-      accept="image/*,.heic,.heif"
+      accept="image/*,.heic,.heif,application/pdf,.pdf"
       on:change={handleFileSelect}
       class="visually-hidden"
     />
@@ -88,8 +105,13 @@
       </div>
 
       <div class="text-content">
-        <h2>Drop your image here</h2>
-        <p>or click to browse files</p>
+        {#if loading}
+          <h2>Opening file…</h2>
+          <p>Everything stays on your device</p>
+        {:else}
+          <h2>Drop your image or PDF here</h2>
+          <p>or click to browse files</p>
+        {/if}
       </div>
 
       <div class="supported-formats">
@@ -98,6 +120,7 @@
         <span>WebP</span>
         <span>GIF</span>
         <span>HEIC</span>
+        <span>PDF</span>
       </div>
 
       {#if error}
@@ -114,7 +137,7 @@
       </svg>
       <div>
         <strong>Private</strong>
-        <span>Images never leave your device</span>
+        <span>Files never leave your device</span>
       </div>
     </div>
     <div class="feature">
@@ -173,6 +196,11 @@
     background: var(--accent-subtle);
   }
 
+  .dropzone.loading {
+    cursor: progress;
+    opacity: 0.7;
+  }
+
   .dropzone:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -219,6 +247,8 @@
 
   .supported-formats {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     gap: var(--space-2);
   }
 

@@ -23,6 +23,12 @@ interface HistoryState {
   version: number; // Increments on undo/redo to trigger reactivity
 }
 
+/** A page's undo/redo stack, saved while another page is being edited. */
+export interface HistorySnapshot {
+  commands: RedactionCommand[];
+  currentIndex: number;
+}
+
 const initialState: HistoryState = {
   commands: [],
   currentIndex: -1,
@@ -70,6 +76,18 @@ function createHistoryStore() {
       });
     },
     clear: () => set(initialState),
+    snapshot: (): HistorySnapshot => {
+      const state = get({ subscribe });
+      return { commands: state.commands, currentIndex: state.currentIndex };
+    },
+    restore: (snapshot: HistorySnapshot | null) => {
+      // Always bump the version so subscribers rebuild from the new stack.
+      update(state => ({
+        commands: snapshot ? [...snapshot.commands] : [],
+        currentIndex: snapshot ? snapshot.currentIndex : -1,
+        version: state.version + 1
+      }));
+    },
     getActiveCommands: () => {
       const state = get({ subscribe });
       return state.commands.slice(0, state.currentIndex + 1);

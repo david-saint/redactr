@@ -2,6 +2,8 @@
   import { settingsStore, type Tool, type RedactionStyle } from '../stores/settings';
   import { imageStore } from '../stores/image';
   import { historyStore, canUndo, canRedo } from '../stores/history';
+  import { documentStore, isPdf } from '../stores/document';
+  import { downloadBlob, redactedFileName } from '../download';
 
   let styleExpanded = $state(false);
   let exporting = $state(false);
@@ -30,6 +32,19 @@
   }
 
   async function handleExport() {
+    if ($isPdf) {
+      exporting = true;
+      try {
+        const blob = await documentStore.exportPdf();
+        downloadBlob(blob, redactedFileName($imageStore.name, 'pdf'));
+      } catch (e) {
+        console.error('Failed to export PDF:', e);
+      } finally {
+        exporting = false;
+      }
+      return;
+    }
+
     const current = $imageStore.current;
     if (!current) return;
 
@@ -49,13 +64,7 @@
         );
       });
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const baseName = $imageStore.name.replace(/\.[^.]+$/, '');
-      a.href = url;
-      a.download = `${baseName}-redacted.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, redactedFileName($imageStore.name, 'png'));
     } finally {
       exporting = false;
     }
@@ -247,7 +256,7 @@
       </button>
     </div>
 
-    <button class="export-btn" onclick={handleExport} disabled={exporting} aria-label="Export">
+    <button class="export-btn" onclick={handleExport} disabled={exporting} aria-label={$isPdf ? 'Export PDF' : 'Export'}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
         <polyline points="7 10 12 15 17 10"/>

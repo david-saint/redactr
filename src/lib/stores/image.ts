@@ -46,8 +46,24 @@ function decodeImageFile(file: File): Promise<ImageData> {
 function createImageStore() {
   const { subscribe, set, update } = writable<ImageState>(initialState);
 
+  /** Replace the loaded image; `current` starts as a copy of `original`. */
+  function setImage(imageData: ImageData, name: string) {
+    set({
+      original: imageData,
+      current: new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height
+      ),
+      width: imageData.width,
+      height: imageData.height,
+      name
+    });
+  }
+
   return {
     subscribe,
+    setImage,
     load: async (file: File) => {
       let imageData: ImageData;
 
@@ -63,20 +79,7 @@ function createImageStore() {
         imageData = await decodeImageFile(file);
       }
 
-      // Create a copy for current state
-      const currentData = new ImageData(
-        new Uint8ClampedArray(imageData.data),
-        imageData.width,
-        imageData.height
-      );
-
-      set({
-        original: imageData,
-        current: currentData,
-        width: imageData.width,
-        height: imageData.height,
-        name: file.name
-      });
+      setImage(imageData, file.name);
     },
     updateCurrent: (imageData: ImageData) => {
       update(state => ({

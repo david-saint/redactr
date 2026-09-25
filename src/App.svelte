@@ -19,6 +19,8 @@
   import ThemeToggle from "./lib/components/ThemeToggle.svelte";
   import DetectionPanel from "./lib/components/DetectionPanel.svelte";
   import ZoomControls from "./lib/components/ZoomControls.svelte";
+  import PageNavigator from "./lib/components/PageNavigator.svelte";
+  import { documentStore, isPdf } from "./lib/stores/document";
   import { zoomStore } from "./lib/stores/zoom";
   import {
     cleanup as cleanupDetection,
@@ -117,6 +119,7 @@
 
   function handleClear() {
     cancelDetection();
+    documentStore.close();
     imageStore.clear();
     historyStore.clear();
     detectionStore.clearResults();
@@ -380,6 +383,9 @@
         <Toolbar />
         <div class="canvas-area">
           <Canvas />
+          {#if $isPdf}
+            <PageNavigator />
+          {/if}
           <DetectionPanel />
         </div>
         <StylePanel />
