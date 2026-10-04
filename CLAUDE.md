@@ -49,7 +49,9 @@ src/
 ├── lib/
 │   ├── components/      # Svelte components (Canvas, Toolbar, StylePanel, etc.)
 │   ├── stores/          # Svelte stores (document, image, history, settings, theme)
-│   ├── gif.ts           # Animated GIF open/render/encode, wrapping the WASM GifDocument/GifEncoder
+│   ├── gif.ts           # Animated GIF open/render (WASM GifDocument) + worker job client (export, thumbnails)
+│   ├── gif.worker.ts    # Module worker running one gifJobs.ts job on its own WASM instance
+│   ├── gifJobs.ts       # Worker-side GIF export (GifEncoder) and thumbnail rendering
 │   ├── pdf.ts           # PDF.js loading/rendering + minimal image-only PDF writer
 │   ├── redaction.ts     # replayCommands(): rebuild an image (or one animation frame) from history commands
 │   └── wasm/
@@ -96,7 +98,8 @@ TypeScript wrapper (`src/lib/wasm/redactor.ts`) handles initialization and provi
 - `GifDocument` (Rust) stores frames as palette indices and composites them on demand (disposal methods, transparency, partial frames), with full-canvas checkpoints for fast random access. Redactions are always applied to composited frames
 - New redactions cover every frame unless the "This frame" scope is chosen in the timeline (`settingsStore.frameScope`, `documentStore.newRedactionFrames()`)
 - Export (`GifEncoder`) writes a new file with only pixels, delays and loop count: per-frame palettes (NeuQuant above 256 colors), changed-rectangle frames when consecutive frames are opaque, identical frames merged
-- `FrameTimeline.svelte`: play/scrub (`,` `.` `K`), scope toggle, one track per redaction with range editing
+- Export and thumbnails run in `gif.worker.ts` (one short-lived worker per job, cancelled when the GIF closes); the worker decodes its own copy of the file bytes kept on `GifSource.bytes`. Vite's `worker.format` is `es` because the worker lazy-loads the WASM module
+- `FrameTimeline.svelte`: play/scrub (`,` `.` `K`), scope toggle, a thumbnail strip (`frameThumbnails`, with redactions covered), and one track per redaction: drag the ends or the bar to change its frames (arrow keys on the focused handles), or use the range fields
 
 ### Canvas Rendering
 

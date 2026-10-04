@@ -11,8 +11,12 @@ import { replayCommands } from '../redaction';
 import {
   isGifFile,
   openGif,
-  createGifWriter,
+  exportGif as exportGifInWorker,
+  renderGifThumbnails,
   playbackDelay,
+  GifJobCancelled,
+  type FrameThumbnail,
+  type GifJob,
   type GifSource
 } from '../gif';
 import {
@@ -45,6 +49,38 @@ export interface DocumentState {
   isPlaying: boolean;
 }
 
+/** Timeline thumbnails are rendered for at most this many frames... */
+const MAX_THUMBNAILS = 120;
+/** ...at most this size (CSS pixels, rendered at 2x for sharp displays). */
+export const THUMBNAIL_HEIGHT = 40;
+const THUMBNAIL_MAX_WIDTH = 96;
+
+/**
+ * Thumbnails of evenly spaced frames of the open GIF, filled in as a worker
+ * renders them. `count` is how many are coming.
+ */
+export interface ThumbnailState {
+  count: number;
+  items: (FrameThumbnail | undefined)[];
+}
+
+function createThumbnailStore() {
+  const { subscribe, set, update } = writable<ThumbnailState>({ count: 0, items: [] });
+  return {
+    subscribe,
+    reset: (count = 0) => set({ count, items: new Array(count) }),
+    add: (index: number, thumbnail: FrameThumbnail) =>
+      update(s => {
+        if (index < 0 || index >= s.count) return s;
+        const items = s.items.slice();
+        items[index] = thumbnail;
+        return { ...s, items };
+      })
+  };
+}
+
+export const frameThumbnails = createThumbnailStore();
+
 const initialState: DocumentState = {
   kind: null,
   pageCount: 0,
@@ -65,10 +101,24 @@ function createDocumentStore() {
   // Incremented on every navigation/open/close so stale async work is dropped.
   let token = 0;
   let playTimer: ReturnType<typeof setTimeout> | null = null;
+  // Worker jobs for the open GIF, cancelled when it closes.
+  const jobs = new Set<GifJob<unknown>>();
+
+  function track<T>(job: GifJob<T>): GifJob<T> {
+    jobs.add(job);
+    job.promise.then(
+      () => jobs.delete(job),
+      () => jobs.delete(job)
+    );
+    return job;
+  }
 
   async function close() {
     token++;
     stopTimer();
+    for (const job of jobs) job.cancel();
+    jobs.clear();
+    frameThumbnails.reset();
     const previous = pdf;
     pdf = null;
     gif?.destroy();
@@ -113,6 +163,25 @@ function createDocumentStore() {
       kind: 'gif',
       pageCount: 1,
       frameCount: source.frameCount
+    });
+    loadThumbnails(source);
+  }
+
+  function loadThumbnails(source: GifSource) {
+    const count = Math.min(source.frameCount, MAX_THUMBNAILS);
+    frameThumbnails.reset(count);
+    const job = renderGifThumbnails(
+      source.bytes,
+      count,
+      THUMBNAIL_MAX_WIDTH * 2,
+      THUMBNAIL_HEIGHT * 2,
+      (index, thumbnail) => {
+        if (gif === source) frameThumbnails.add(index, thumbnail);
+      }
+    );
+    track(job).promise.catch(e => {
+      // Thumbnails are a convenience; the timeline works without them.
+      if (!(e instanceof GifJobCancelled)) console.warn('Failed to render thumbnails:', e);
     });
   }
 
@@ -275,9 +344,10 @@ function createDocumentStore() {
   }
 
   /**
-   * Export the GIF with redactions applied to every frame. The file is encoded
-   * from scratch, keeping only pixels, frame delays and the loop count.
-   * `onProgress` is called with the number of frames completed so far.
+   * Export the GIF with redactions applied to every frame. A worker encodes
+   * the file from scratch, keeping only pixels, frame delays and the loop
+   * count. `onProgress` is called with the number of frames encoded so far.
+   * Closing the document cancels the export.
    */
   async function exportGif(
     onProgress?: (done: number, total: number) => void
@@ -290,25 +360,7 @@ function createDocumentStore() {
 
     // A consistent snapshot even if the user keeps editing while this runs.
     const commands = historyStore.getActiveCommands();
-    const writer = createGifWriter(source.width, source.height, source.repeat);
-    try {
-      for (let i = 0; i < source.frameCount; i++) {
-        const original = source.renderFrame(i);
-        writer.addFrame(
-          commands.length ? replayCommands(original, commands, i) : original,
-          source.delays[i]
-        );
-        onProgress?.(i + 1, source.frameCount);
-
-        // Let the UI show progress between frames.
-        await new Promise(resolve => setTimeout(resolve, 0));
-        if (gif !== source) throw new Error('Document was closed during export');
-      }
-      return writer.finish();
-    } catch (e) {
-      writer.abort();
-      throw e;
-    }
+    return track(exportGifInWorker(source.bytes, commands, onProgress)).promise;
   }
 
   /**

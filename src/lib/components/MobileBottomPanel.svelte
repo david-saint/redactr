@@ -4,6 +4,7 @@
   import { historyStore, canUndo, canRedo } from '../stores/history';
   import { documentStore, isPdf, isGif } from '../stores/document';
   import { downloadBlob, redactedFileName } from '../download';
+  import { GifJobCancelled } from '../gif';
 
   let styleExpanded = $state(false);
   let exporting = $state(false);
@@ -41,7 +42,10 @@
           : await documentStore.exportGif();
         downloadBlob(blob, redactedFileName($imageStore.name, format));
       } catch (e) {
-        console.error(`Failed to export ${format.toUpperCase()}:`, e);
+        // Closing the GIF cancels its export; nothing went wrong.
+        if (!(e instanceof GifJobCancelled)) {
+          console.error(`Failed to export ${format.toUpperCase()}:`, e);
+        }
       } finally {
         exporting = false;
       }

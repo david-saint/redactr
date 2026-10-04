@@ -3,6 +3,7 @@
   import { imageStore } from '../stores/image';
   import { documentStore, isPdf, isGif } from '../stores/document';
   import { downloadBlob, redactedFileName } from '../download';
+  import { GifJobCancelled } from '../gif';
 
   const styles: { id: RedactionStyle; label: string; icon: string }[] = [
     { id: 'solid', label: 'Solid', icon: 'M4 4h16v16H4z' },
@@ -95,7 +96,8 @@
       });
       downloadBlob(blob, redactedFileName($imageStore.name, 'gif'));
     } catch (e) {
-      console.error('Failed to export GIF:', e);
+      // Closing the GIF cancels its export; nothing went wrong.
+      if (!(e instanceof GifJobCancelled)) console.error('Failed to export GIF:', e);
     } finally {
       exporting = false;
       exportProgress = '';

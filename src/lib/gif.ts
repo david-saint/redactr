@@ -6,9 +6,14 @@
  * works on exactly what a viewer sees. Export re-encodes every frame into a
  * brand-new GIF: only pixels, frame timing and the loop count are carried over,
  * so comments, XMP and other extension data in the original are dropped.
+ *
+ * Export and timeline thumbnails run in a Web Worker (`gif.worker.ts`), each
+ * job decoding its own copy of the file, so the editor stays responsive.
  */
 
-import { createGifEncoder, decodeGif, wasmReady } from './wasm/redactor';
+import { decodeGif, wasmReady } from './wasm/redactor';
+import type { GifJobRequest, GifJobResponse } from './gifJobs';
+import type { RedactionCommand } from './stores/history';
 
 const GIF_EXTENSION = /\.gif$/i;
 
@@ -21,6 +26,8 @@ export class GifError extends Error {
 }
 
 export interface GifSource {
+  /** The original file, for jobs that decode their own copy in a worker. */
+  bytes: ArrayBuffer;
   width: number;
   height: number;
   frameCount: number;
@@ -33,12 +40,23 @@ export interface GifSource {
   destroy(): void;
 }
 
-export interface GifWriter {
-  /** Append a frame shown for `delay` hundredths of a second. */
-  addFrame(frame: ImageData, delay: number): void;
-  finish(): Blob;
-  /** Release the encoder without producing a file. */
-  abort(): void;
+/** Work running in a worker; `cancel` stops it and rejects with `GifJobCancelled`. */
+export interface GifJob<T> {
+  promise: Promise<T>;
+  cancel(): void;
+}
+
+export class GifJobCancelled extends Error {
+  constructor() {
+    super('GIF job was cancelled');
+    this.name = 'GifJobCancelled';
+  }
+}
+
+/** A small rendering of one frame, for the timeline. */
+export interface FrameThumbnail {
+  frame: number;
+  image: ImageData;
 }
 
 /**
@@ -69,11 +87,11 @@ function toError(e: unknown): Error {
 
 export async function openGif(file: File): Promise<GifSource> {
   await wasmReady;
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bytes = await file.arrayBuffer();
 
   let doc: ReturnType<typeof decodeGif>;
   try {
-    doc = decodeGif(bytes);
+    doc = decodeGif(new Uint8Array(bytes));
   } catch (e) {
     throw toError(e);
   }
@@ -82,6 +100,7 @@ export async function openGif(file: File): Promise<GifSource> {
   let destroyed = false;
 
   return {
+    bytes,
     width,
     height,
     frameCount,
@@ -111,47 +130,94 @@ export async function openGif(file: File): Promise<GifSource> {
   };
 }
 
-export function createGifWriter(
-  width: number,
-  height: number,
-  repeat: number
-): GifWriter {
-  let encoder: ReturnType<typeof createGifEncoder>;
-  try {
-    encoder = createGifEncoder(width, height, repeat);
-  } catch (e) {
-    throw toError(e);
-  }
-  let done = false;
+/**
+ * Start a job in a new worker. `onMessage` handles everything but errors and
+ * calls `resolve` to finish; the worker is terminated however the job ends.
+ */
+function runJob<T>(
+  request: GifJobRequest,
+  onMessage: (message: GifJobResponse, resolve: (value: T) => void) => void
+): GifJob<T> {
+  const worker = new Worker(new URL('./gif.worker.ts', import.meta.url), {
+    type: 'module'
+  });
+  let settled = false;
+  let cancel = () => {};
 
-  return {
-    addFrame(frame: ImageData, delay: number) {
-      if (done) throw new Error('GIF has already been written');
-      try {
-        encoder.addFrame(
-          new Uint8Array(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength),
-          delay
-        );
-      } catch (e) {
-        throw toError(e);
+  const promise = new Promise<T>((resolve, reject) => {
+    const settle = (finish: () => void) => {
+      if (settled) return;
+      settled = true;
+      worker.terminate();
+      finish();
+    };
+
+    worker.onmessage = (event: MessageEvent<GifJobResponse>) => {
+      // Messages already queued when the job ended are dropped.
+      if (settled) return;
+      const message = event.data;
+      if (message.type === 'error') {
+        settle(() => reject(new GifError(message.message)));
+      } else {
+        onMessage(message, value => settle(() => resolve(value)));
       }
-    },
-    finish() {
-      if (done) throw new Error('GIF has already been written');
-      // `finish` consumes the encoder, even when it fails.
-      done = true;
-      let bytes: Uint8Array;
-      try {
-        bytes = encoder.finish();
-      } catch (e) {
-        throw toError(e);
-      }
-      return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' });
-    },
-    abort() {
-      if (done) return;
-      done = true;
-      encoder.free();
+    };
+    worker.onerror = (event: ErrorEvent) => {
+      event.preventDefault();
+      settle(() => reject(new Error(event.message || 'GIF worker failed')));
+    };
+    cancel = () => settle(() => reject(new GifJobCancelled()));
+  });
+
+  // The worker gets its own copy of the file.
+  const bytes = request.bytes.slice(0);
+  worker.postMessage({ ...request, bytes }, [bytes]);
+  return { promise, cancel: () => cancel() };
+}
+
+/**
+ * Export a redacted GIF in a worker. `onProgress` is called with the number of
+ * frames encoded so far.
+ */
+export function exportGif(
+  bytes: ArrayBuffer,
+  commands: RedactionCommand[],
+  onProgress?: (done: number, total: number) => void
+): GifJob<Blob> {
+  // Plain copies: store values may not survive structured cloning as-is.
+  const plainCommands = JSON.parse(JSON.stringify(commands)) as RedactionCommand[];
+  return runJob<Blob>({ type: 'export', bytes, commands: plainCommands }, (message, resolve) => {
+    if (message.type === 'progress') {
+      onProgress?.(message.done, message.total);
+    } else if (message.type === 'exported') {
+      resolve(new Blob([message.bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' }));
     }
-  };
+  });
+}
+
+/**
+ * Render up to `count` evenly spaced frames, at most `maxWidth`×`maxHeight`,
+ * in a worker. Thumbnails arrive one at a time through `onThumbnail`.
+ */
+export function renderGifThumbnails(
+  bytes: ArrayBuffer,
+  count: number,
+  maxWidth: number,
+  maxHeight: number,
+  onThumbnail: (index: number, thumbnail: FrameThumbnail) => void
+): GifJob<void> {
+  return runJob<void>(
+    { type: 'thumbnails', bytes, count, maxWidth, maxHeight },
+    (message, resolve) => {
+      if (message.type === 'thumbnail') {
+        const data = new Uint8ClampedArray(message.data);
+        onThumbnail(message.index, {
+          frame: message.frame,
+          image: new ImageData(data, message.width, message.height)
+        });
+      } else if (message.type === 'complete') {
+        resolve();
+      }
+    }
+  );
 }

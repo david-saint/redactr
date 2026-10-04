@@ -1,18 +1,24 @@
 // @ts-nocheck
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const wasm = {
-  decodeGif: vi.fn(),
-  createGifEncoder: vi.fn()
+  decodeGif: vi.fn()
 };
 
 vi.mock('../wasm/redactor', () => ({
   wasmReady: Promise.resolve(),
-  decodeGif: (...args) => wasm.decodeGif(...args),
-  createGifEncoder: (...args) => wasm.createGifEncoder(...args)
+  decodeGif: (...args) => wasm.decodeGif(...args)
 }));
 
-import { isGifFile, playbackDelay, openGif, createGifWriter, GifError } from '../gif';
+import {
+  isGifFile,
+  playbackDelay,
+  openGif,
+  exportGif,
+  renderGifThumbnails,
+  GifError,
+  GifJobCancelled
+} from '../gif';
 
 function fakeDocument() {
   return {
@@ -22,14 +28,6 @@ function fakeDocument() {
     repeat: -1,
     delays: new Uint16Array([10, 0, 25]),
     renderFrame: vi.fn((i: number) => new Uint8Array(8).fill(i + 1)),
-    free: vi.fn()
-  };
-}
-
-function fakeEncoder() {
-  return {
-    addFrame: vi.fn(),
-    finish: vi.fn(() => new Uint8Array([0x47, 0x49, 0x46])),
     free: vi.fn()
   };
 }
@@ -79,6 +77,7 @@ describe('openGif', () => {
     expect(wasm.decodeGif.mock.calls[0][0]).toEqual(new Uint8Array([0x47, 0x49, 0x46]));
     expect(source).toMatchObject({ width: 2, height: 1, frameCount: 3, repeat: -1 });
     expect(source.delays).toEqual([10, 0, 25]);
+    expect(source.bytes.byteLength).toBe(3);
 
     const frame = source.renderFrame(2);
     expect(doc.renderFrame).toHaveBeenCalledWith(2);
@@ -110,50 +109,132 @@ describe('openGif', () => {
   });
 });
 
-describe('createGifWriter', () => {
+// A stand-in for the module worker: records what it was sent and lets tests reply.
+class FakeWorker {
+  static instances: FakeWorker[] = [];
+  url: string;
+  options: WorkerOptions;
+  sent: any[] = [];
+  transfers: Transferable[][] = [];
+  terminated = false;
+  onmessage: ((event: { data: any }) => void) | null = null;
+  onerror: ((event: any) => void) | null = null;
+
+  constructor(url: URL | string, options: WorkerOptions) {
+    this.url = String(url);
+    this.options = options;
+    FakeWorker.instances.push(this);
+  }
+  postMessage(data: any, transfer: Transferable[] = []) {
+    this.sent.push(data);
+    this.transfers.push(transfer);
+  }
+  terminate() {
+    this.terminated = true;
+  }
+  reply(data: any) {
+    this.onmessage?.({ data });
+  }
+}
+
+describe('worker jobs', () => {
+  const bytes = () => new Uint8Array([1, 2, 3]).buffer;
+
   beforeEach(() => {
-    wasm.createGifEncoder.mockReset();
+    FakeWorker.instances = [];
+    vi.stubGlobal('Worker', FakeWorker);
   });
 
-  it('should pass frames to the encoder and return a GIF blob', async () => {
-    const encoder = fakeEncoder();
-    wasm.createGifEncoder.mockReturnValue(encoder);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
-    const writer = createGifWriter(2, 1, 0);
-    writer.addFrame(new ImageData(new Uint8ClampedArray(8).fill(7), 2, 1), 12);
-    const blob = writer.finish();
+  it('should export in a module worker and resolve with a GIF blob', async () => {
+    const source = bytes();
+    const commands = [{ id: 'a', type: 'rect', frames: { start: 1, end: 2 } }];
+    const progress = vi.fn();
 
-    expect(wasm.createGifEncoder).toHaveBeenCalledWith(2, 1, 0);
-    const [pixels, delay] = encoder.addFrame.mock.calls[0];
-    expect(Array.from(pixels)).toEqual(new Array(8).fill(7));
-    expect(delay).toBe(12);
+    const job = exportGif(source, commands, progress);
+    const worker = FakeWorker.instances[0];
+
+    expect(worker.url).toContain('gif.worker');
+    expect(worker.options).toEqual({ type: 'module' });
+    const request = worker.sent[0];
+    expect(request).toMatchObject({ type: 'export', commands });
+    expect(request.commands).not.toBe(commands);
+    // The worker gets a transferred copy; the caller's bytes stay usable.
+    expect(request.bytes).not.toBe(source);
+    expect(worker.transfers[0]).toEqual([request.bytes]);
+    expect(source.byteLength).toBe(3);
+
+    worker.reply({ type: 'progress', done: 1, total: 2 });
+    worker.reply({ type: 'exported', bytes: new Uint8Array([0x47, 0x49, 0x46]) });
+    const blob = await job.promise;
+
+    expect(progress).toHaveBeenCalledWith(1, 2);
     expect(blob.type).toBe('image/gif');
     expect(blob.size).toBe(3);
+    expect(worker.terminated).toBe(true);
   });
 
-  it('should not free the encoder after finishing, since finishing consumes it', () => {
-    const encoder = fakeEncoder();
-    encoder.finish.mockImplementation(() => {
-      throw 'No frames to encode';
+  it('should reject with the worker\'s message and stop the worker', async () => {
+    const job = exportGif(bytes(), []);
+    const worker = FakeWorker.instances[0];
+
+    worker.reply({ type: 'error', message: 'No frames to encode' });
+
+    const error = await job.promise.catch((e) => e);
+    expect(error).toBeInstanceOf(GifError);
+    expect(error.message).toBe('No frames to encode');
+    expect(worker.terminated).toBe(true);
+  });
+
+  it('should reject when the worker fails to run', async () => {
+    const job = exportGif(bytes(), []);
+    const event = { message: 'boom', preventDefault: vi.fn() };
+
+    FakeWorker.instances[0].onerror(event);
+
+    await expect(job.promise).rejects.toThrow('boom');
+    expect(event.preventDefault).toHaveBeenCalled();
+  });
+
+  it('should cancel by terminating the worker and ignore later messages', async () => {
+    const progress = vi.fn();
+    const job = exportGif(bytes(), [], progress);
+    const worker = FakeWorker.instances[0];
+
+    job.cancel();
+    worker.reply({ type: 'progress', done: 1, total: 1 });
+
+    await expect(job.promise).rejects.toBeInstanceOf(GifJobCancelled);
+    expect(worker.terminated).toBe(true);
+    expect(progress).not.toHaveBeenCalled();
+  });
+
+  it('should stream thumbnails as ImageData and finish on complete', async () => {
+    const onThumbnail = vi.fn();
+    const job = renderGifThumbnails(bytes(), 10, 96, 54, onThumbnail);
+    const worker = FakeWorker.instances[0];
+
+    expect(worker.sent[0]).toMatchObject({ type: 'thumbnails', count: 10, maxWidth: 96, maxHeight: 54 });
+
+    worker.reply({
+      type: 'thumbnail',
+      index: 3,
+      frame: 7,
+      width: 2,
+      height: 1,
+      data: new Uint8ClampedArray(8).fill(9)
     });
-    wasm.createGifEncoder.mockReturnValue(encoder);
+    worker.reply({ type: 'complete' });
+    await job.promise;
 
-    const writer = createGifWriter(2, 1, -1);
-    expect(() => writer.finish()).toThrow(GifError);
-    writer.abort();
-
-    expect(encoder.free).not.toHaveBeenCalled();
-    expect(() => writer.addFrame(new ImageData(2, 1), 1)).toThrow('already');
-  });
-
-  it('should free the encoder when aborted', () => {
-    const encoder = fakeEncoder();
-    wasm.createGifEncoder.mockReturnValue(encoder);
-
-    const writer = createGifWriter(2, 1, -1);
-    writer.abort();
-    writer.abort();
-
-    expect(encoder.free).toHaveBeenCalledTimes(1);
+    const [index, thumbnail] = onThumbnail.mock.calls[0];
+    expect(index).toBe(3);
+    expect(thumbnail.frame).toBe(7);
+    expect(thumbnail.image.width).toBe(2);
+    expect(Array.from(thumbnail.image.data)).toEqual(new Array(8).fill(9));
+    expect(worker.terminated).toBe(true);
   });
 });

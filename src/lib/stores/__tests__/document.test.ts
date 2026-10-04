@@ -23,16 +23,33 @@ vi.mock('../../pdf', async (importOriginal) => {
 
 const gifMock = {
   openGif: vi.fn(),
-  createGifWriter: vi.fn()
+  exportGif: vi.fn(),
+  renderGifThumbnails: vi.fn()
 };
 
-// The real module loads WASM; GIF decoding and encoding are tested separately.
+// The real module loads WASM and workers; those are tested separately.
 vi.mock('../../gif', () => ({
   isGifFile: (file: File) => file.type === 'image/gif',
   playbackDelay: (delay: number) => (delay <= 1 ? 100 : delay * 10),
   openGif: (...args) => gifMock.openGif(...args),
-  createGifWriter: (...args) => gifMock.createGifWriter(...args)
+  exportGif: (...args) => gifMock.exportGif(...args),
+  renderGifThumbnails: (...args) => gifMock.renderGifThumbnails(...args),
+  GifJobCancelled: class GifJobCancelled extends Error {}
 }));
+
+/** A worker job the test settles by hand; cancelling rejects it. */
+function deferredJob() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return {
+    promise,
+    resolve,
+    cancel: vi.fn(() => reject(new Error('cancelled')))
+  };
+}
 
 // Replaying commands marks the image with the number of active commands, and
 // the animation frame they were replayed for (255 when none).
@@ -70,6 +87,7 @@ const pdfFile = () => new File(['%PDF-1.7'], 'report.pdf', { type: 'application/
 
 function createGif(frameCount = 4) {
   return {
+    bytes: new ArrayBuffer(6),
     width: 2,
     height: 2,
     frameCount,
@@ -77,14 +95,6 @@ function createGif(frameCount = 4) {
     repeat: -1,
     renderFrame: vi.fn((index: number) => makeImage(10 + index)),
     destroy: vi.fn()
-  };
-}
-
-function createWriter() {
-  return {
-    addFrame: vi.fn(),
-    finish: vi.fn(() => new Blob(['GIF89a'], { type: 'image/gif' })),
-    abort: vi.fn()
   };
 }
 
@@ -97,6 +107,7 @@ describe('documentStore', () => {
   let historyStore: any;
   let settingsStore: any;
   let isGif: any;
+  let frameThumbnails: any;
   let source: ReturnType<typeof createSource>;
 
   beforeEach(async () => {
@@ -105,7 +116,8 @@ describe('documentStore', () => {
     source = createSource();
     pdfMock.openPdf.mockResolvedValue(source);
 
-    ({ documentStore, isPdf, isGif } = await import('../document'));
+    gifMock.renderGifThumbnails.mockImplementation(() => deferredJob());
+    ({ documentStore, isPdf, isGif, frameThumbnails } = await import('../document'));
     ({ imageStore } = await import('../image'));
     ({ historyStore } = await import('../history'));
     ({ settingsStore } = await import('../settings'));
@@ -385,47 +397,65 @@ describe('documentStore', () => {
       });
     });
 
+    describe('thumbnails', () => {
+      it('should render thumbnails in a worker and collect them', () => {
+        const [bytes, count, maxWidth, maxHeight, onThumbnail] =
+          gifMock.renderGifThumbnails.mock.calls[0];
+        expect(bytes).toBe(gif.bytes);
+        expect(count).toBe(4);
+        expect([maxWidth, maxHeight]).toEqual([192, 80]);
+        expect(get(frameThumbnails).count).toBe(4);
+
+        const thumbnail = { frame: 2, image: makeImage(5) };
+        onThumbnail(2, thumbnail);
+        onThumbnail(9, thumbnail);
+
+        expect(get(frameThumbnails).items[2]).toBe(thumbnail);
+        expect(get(frameThumbnails).items.filter(Boolean)).toHaveLength(1);
+      });
+
+      it('should cancel rendering and drop late thumbnails when the GIF closes', async () => {
+        const job = gifMock.renderGifThumbnails.mock.results[0].value;
+        const onThumbnail = gifMock.renderGifThumbnails.mock.calls[0][4];
+
+        await documentStore.close();
+        onThumbnail(0, { frame: 0, image: makeImage(5) });
+
+        expect(job.cancel).toHaveBeenCalled();
+        expect(get(frameThumbnails)).toEqual({ count: 0, items: [] });
+      });
+    });
+
     describe('exportGif', () => {
-      it('should write every frame with its redactions, delays and loop count', async () => {
-        const writer = createWriter();
-        gifMock.createGifWriter.mockReturnValue(writer);
+      it('should export in a worker with a snapshot of the active redactions', async () => {
+        const blob = new Blob(['GIF89a'], { type: 'image/gif' });
+        gifMock.exportGif.mockReturnValue({ promise: Promise.resolve(blob), cancel: vi.fn() });
         historyStore.push(rect);
         historyStore.push(rect);
         historyStore.undo();
-        documentStore.goToFrame(2);
+        documentStore.play();
 
         const progress = vi.fn();
-        const blob = await documentStore.exportGif(progress);
+        const result = await documentStore.exportGif(progress);
 
-        expect(blob.type).toBe('image/gif');
-        expect(gifMock.createGifWriter).toHaveBeenCalledWith(2, 2, -1);
-        const frames = writer.addFrame.mock.calls.map(([image]) => Array.from(image.data.slice(0, 2)));
-        expect(frames).toEqual([[201, 0], [201, 1], [201, 2], [201, 3]]);
-        expect(writer.addFrame.mock.calls.map(([, delay]) => delay)).toEqual([5, 0, 5, 5]);
-        expect(progress).toHaveBeenLastCalledWith(4, 4);
-        expect(writer.abort).not.toHaveBeenCalled();
+        expect(result).toBe(blob);
+        const [bytes, commands, onProgress] = gifMock.exportGif.mock.calls[0];
+        expect(bytes).toBe(gif.bytes);
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toMatchObject(rect);
+        expect(onProgress).toBe(progress);
+        expect(get(documentStore).isPlaying).toBe(false);
       });
 
-      it('should copy frames as-is when nothing is redacted', async () => {
-        const writer = createWriter();
-        gifMock.createGifWriter.mockReturnValue(writer);
+      it('should cancel the export when the document closes', async () => {
+        const job = deferredJob();
+        gifMock.exportGif.mockReturnValue(job);
 
-        await documentStore.exportGif();
+        const exporting = documentStore.exportGif();
+        await documentStore.close();
 
-        expect(writer.addFrame.mock.calls.map(([image]) => image.data[0])).toEqual([10, 11, 12, 13]);
-      });
-
-      it('should release the encoder when a frame fails', async () => {
-        const writer = createWriter();
-        gifMock.createGifWriter.mockReturnValue(writer);
-        gif.renderFrame.mockImplementation((i) => {
-          if (i === 2) throw new Error('bad frame');
-          return makeImage(10 + i);
-        });
-
-        await expect(documentStore.exportGif()).rejects.toThrow('bad frame');
-        expect(writer.abort).toHaveBeenCalled();
-        expect(writer.finish).not.toHaveBeenCalled();
+        expect(job.cancel).toHaveBeenCalled();
+        await expect(exporting).rejects.toThrow('cancelled');
       });
 
       it('should fail when no GIF is open', async () => {
