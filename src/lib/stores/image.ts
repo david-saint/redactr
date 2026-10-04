@@ -7,6 +7,11 @@ export interface ImageState {
   width: number;
   height: number;
   name: string;
+  /**
+   * Changes whenever a different image or page is loaded, but not when moving
+   * between frames of an animation, so the view (zoom, pan) can be kept.
+   */
+  id: number;
 }
 
 const initialState: ImageState = {
@@ -14,8 +19,11 @@ const initialState: ImageState = {
   current: null,
   width: 0,
   height: 0,
-  name: ''
+  name: '',
+  id: 0
 };
+
+let nextId = 1;
 
 function decodeImageFile(file: File): Promise<ImageData> {
   return new Promise<ImageData>((resolve, reject) => {
@@ -49,6 +57,7 @@ function createImageStore() {
   /** Replace the loaded image; `current` starts as a copy of `original`. */
   function setImage(imageData: ImageData, name: string) {
     set({
+      id: nextId++,
       original: imageData,
       current: new ImageData(
         new Uint8ClampedArray(imageData.data),
@@ -64,6 +73,10 @@ function createImageStore() {
   return {
     subscribe,
     setImage,
+    /** Show another frame of the same animation, already redacted as `current`. */
+    setFrame: (original: ImageData, current: ImageData) => {
+      update(state => ({ ...state, original, current }));
+    },
     load: async (file: File) => {
       let imageData: ImageData;
 

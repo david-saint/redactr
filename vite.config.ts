@@ -55,6 +55,11 @@ function pdfjsAssets(): Plugin {
 }
 
 export default defineConfig({
+  // Module workers: the GIF worker lazy-loads the WASM module, which needs
+  // code splitting (unsupported by the default "iife" worker format).
+  worker: {
+    format: "es",
+  },
   plugins: [
     svelte(),
     wasm(),

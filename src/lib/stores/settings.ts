@@ -3,6 +3,8 @@ import { writable } from 'svelte/store';
 export type Tool = 'hand' | 'rect' | 'brush';
 export type RedactTool = 'rect' | 'brush';
 export type RedactionStyle = 'solid' | 'pixelate' | 'blur';
+/** Which frames of an animation a new redaction covers. */
+export type FrameScope = 'all' | 'current';
 
 export interface Settings {
   tool: Tool;
@@ -13,6 +15,7 @@ export interface Settings {
   fillColor: string;
   eyedropperMode: boolean;
   toolBeforeEyedropper: Tool | null;
+  frameScope: FrameScope;
 }
 
 const initialSettings: Settings = {
@@ -23,7 +26,8 @@ const initialSettings: Settings = {
   brushSize: 20,
   fillColor: '#000000',
   eyedropperMode: false,
-  toolBeforeEyedropper: null
+  toolBeforeEyedropper: null,
+  frameScope: 'all'
 };
 
 function createSettingsStore() {
@@ -43,6 +47,7 @@ function createSettingsStore() {
     setIntensity: (intensity: number) => update(s => ({ ...s, intensity: Math.max(1, Math.min(100, intensity)) })),
     setBrushSize: (brushSize: number) => update(s => ({ ...s, brushSize: Math.max(5, Math.min(100, brushSize)) })),
     setFillColor: (fillColor: string) => update(s => ({ ...s, fillColor })),
+    setFrameScope: (frameScope: FrameScope) => update(s => ({ ...s, frameScope })),
     enterEyedropperMode: () => update(s => ({
       ...s,
       eyedropperMode: true,

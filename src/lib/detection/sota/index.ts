@@ -5,6 +5,7 @@ import { get } from "svelte/store";
 import { sotaStore } from "../../stores/sota";
 import { imageStore } from "../../stores/image";
 import { historyStore } from "../../stores/history";
+import { documentStore } from "../../stores/document";
 import { applyRectRedaction, type RedactionOptions } from "../../wasm/redactor";
 import { evaluateWithLisa } from "./lisa";
 import { planWithRalph } from "./ralph";
@@ -23,6 +24,8 @@ let currentAbortController: AbortController | null = null;
  * 5. Repeat until target score or max steps reached
  */
 export async function startRalphLisaLoop(): Promise<void> {
+  // Results belong to the animation frame on screen; hold it still.
+  documentStore.pause();
   const state = sotaStore.getState();
 
   if (!state.apiKey) {
@@ -203,6 +206,7 @@ async function applyRedactions(
         points: null,
         intensity: redaction.intensity,
         color: "#000000",
+        frames: documentStore.newRedactionFrames(),
       });
 
       applied.push(redaction);

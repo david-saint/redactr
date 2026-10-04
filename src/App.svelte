@@ -20,7 +20,8 @@
   import DetectionPanel from "./lib/components/DetectionPanel.svelte";
   import ZoomControls from "./lib/components/ZoomControls.svelte";
   import PageNavigator from "./lib/components/PageNavigator.svelte";
-  import { documentStore, isPdf } from "./lib/stores/document";
+  import FrameTimeline from "./lib/components/FrameTimeline.svelte";
+  import { documentStore, isPdf, isGif } from "./lib/stores/document";
   import { zoomStore } from "./lib/stores/zoom";
   import {
     cleanup as cleanupDetection,
@@ -159,6 +160,7 @@
         points: null,
         intensity: $settingsStore.intensity,
         color: $settingsStore.fillColor,
+        frames: documentStore.newRedactionFrames(),
       });
     }
 
@@ -385,6 +387,9 @@
           <Canvas />
           {#if $isPdf}
             <PageNavigator />
+          {/if}
+          {#if $isGif}
+            <FrameTimeline />
           {/if}
           <DetectionPanel />
         </div>

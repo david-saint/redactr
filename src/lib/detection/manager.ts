@@ -9,6 +9,7 @@ import type {
   CancelMessage,
 } from "./types";
 import { imageStore } from "../stores/image";
+import { documentStore } from "../stores/document";
 import Tesseract from "tesseract.js";
 import { detectFaces, isFaceDetectorReady } from "./mediapipe-face";
 
@@ -266,6 +267,8 @@ export function checkNeedsDownload(): boolean {
 
 // Start detection on current image
 export async function startDetection(): Promise<void> {
+  // Results belong to the animation frame on screen; hold it still.
+  documentStore.pause();
   const imageData = get(imageStore).current;
   if (!imageData) {
     detectionStore.setError("No image loaded");
