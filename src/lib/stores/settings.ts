@@ -3,8 +3,11 @@ import { writable } from 'svelte/store';
 export type Tool = 'hand' | 'rect' | 'brush';
 export type RedactTool = 'rect' | 'brush';
 export type RedactionStyle = 'solid' | 'pixelate' | 'blur';
-/** Which frames of an animation a new redaction covers. */
-export type FrameScope = 'all' | 'current';
+/**
+ * Which frames of an animation a new redaction covers: all of them, the one
+ * on screen, or wherever the content under it moves ('follow').
+ */
+export type FrameScope = 'all' | 'current' | 'follow';
 
 export interface Settings {
   tool: Tool;

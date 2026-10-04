@@ -72,10 +72,16 @@ export function applyRectRedaction(
   // Clone the image data - cast to Uint8Array for WASM compatibility
   const data = new Uint8Array(imageData.data.buffer.slice(0));
 
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const iw = Math.floor(width);
-  const ih = Math.floor(height);
+  // Clip to the image, covering every pixel the rectangle touches. (The
+  // WASM functions take unsigned coordinates, so a negative x or y would
+  // wrap around and the redaction would be skipped entirely.)
+  const ix = Math.max(0, Math.floor(x));
+  const iy = Math.max(0, Math.floor(y));
+  const iw = Math.min(imageData.width, Math.ceil(x + width)) - ix;
+  const ih = Math.min(imageData.height, Math.ceil(y + height)) - iy;
+  if (iw <= 0 || ih <= 0) {
+    return new ImageData(new Uint8ClampedArray(data.buffer), imageData.width, imageData.height);
+  }
 
   switch (options.style) {
     case 'solid': {
@@ -182,4 +188,22 @@ export function createGifEncoder(width: number, height: number, repeat: number):
     throw new Error('WASM module not initialized');
   }
   return new wasmModule.GifEncoder(width, height, repeat);
+}
+
+/**
+ * Follow the content under `box` on frame `from` towards frame `to`. Returns
+ * `[frame, x, y, width, height, score]` per frame tracked; `progress` gets the
+ * number of frames done. Throws the tracker's message (a string) on failure.
+ */
+export function trackRegion(
+  doc: GifDocument,
+  from: number,
+  box: { x: number; y: number; width: number; height: number },
+  to: number,
+  progress: (done: number) => void
+): Float64Array {
+  if (!wasmModule) {
+    throw new Error('WASM module not initialized');
+  }
+  return wasmModule.trackRegion(doc, from, box.x, box.y, box.width, box.height, to, progress);
 }

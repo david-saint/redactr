@@ -194,7 +194,7 @@ async function applyRedactions(
       currentImage = newImageData;
 
       // Push to history for undo support
-      historyStore.push({
+      const id = historyStore.push({
         type: "rect",
         style: redaction.style,
         region: {
@@ -208,6 +208,7 @@ async function applyRedactions(
         color: "#000000",
         frames: documentStore.newRedactionFrames(),
       });
+      documentStore.followIfNeeded(id);
 
       applied.push(redaction);
     } catch (err) {

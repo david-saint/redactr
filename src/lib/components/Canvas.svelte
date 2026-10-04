@@ -8,7 +8,7 @@
     selectedRedactionId,
     type RedactionCommand,
   } from "../stores/history";
-  import { documentStore } from "../stores/document";
+  import { documentStore, boxPlacement } from "../stores/document";
   import {
     detectionStore,
     type Detection,
@@ -20,7 +20,7 @@
     isWasmReady,
     wasmReady,
   } from "../wasm/redactor";
-  import { replayCommands } from "../redaction";
+  import { commandBounds, placeOnFrame, replayCommands } from "../redaction";
   import { zoomStore, MIN_ZOOM, MAX_ZOOM } from "../stores/zoom";
 
   // Detection type colors
@@ -164,26 +164,6 @@
     renderImage();
   }
 
-  /** Bounding box of a redaction, for highlighting it. */
-  function commandBounds(cmd: RedactionCommand) {
-    if (cmd.region) return cmd.region;
-    if (!cmd.points || cmd.points.length < 2) return null;
-    const pad = (cmd.brushSize || 20) / 2;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let i = 0; i + 1 < cmd.points.length; i += 2) {
-      minX = Math.min(minX, cmd.points[i]);
-      maxX = Math.max(maxX, cmd.points[i]);
-      minY = Math.min(minY, cmd.points[i + 1]);
-      maxY = Math.max(maxY, cmd.points[i + 1]);
-    }
-    return {
-      x: minX - pad,
-      y: minY - pad,
-      width: maxX - minX + pad * 2,
-      height: maxY - minY + pad * 2,
-    };
-  }
-
   function renderImage() {
     if (!ctx || !$imageStore.current) return;
     ctx.putImageData($imageStore.current, 0, 0);
@@ -253,9 +233,14 @@
     }
 
     // Outline the redaction selected in the frame timeline
-    const selected = $selectedRedactionId
+    const selectedCommand = $selectedRedactionId
       ? $activeCommands.find((c) => c.id === $selectedRedactionId)
       : null;
+    // Where it sits on the frame on screen (it may move, or not be shown).
+    const selected =
+      selectedCommand && $documentStore.kind === "gif"
+        ? placeOnFrame(selectedCommand, $documentStore.currentFrame)
+        : selectedCommand;
     const bounds = selected ? commandBounds(selected) : null;
     if (bounds) {
       const gap = 3 / effectiveScale;
@@ -314,7 +299,10 @@
 
   // Re-render overlay when detection results or the highlighted redaction change
   $: if (
-    ($detectionStore.results || $selectedRedactionId || $activeCommands) &&
+    ($detectionStore.results ||
+      $selectedRedactionId ||
+      $activeCommands ||
+      $documentStore.currentFrame >= 0) &&
     overlayCtx
   ) {
     renderOverlay();
@@ -368,6 +356,10 @@
       e.preventDefault();
       isPanMode = true;
       zoomStore.setPanning(true);
+    }
+    if (e.code === 'Escape' && $boxPlacement) {
+      e.preventDefault();
+      boxPlacement.set(null);
     }
     if (e.code === 'Escape' && $settingsStore.eyedropperMode) {
       e.preventDefault();
@@ -659,6 +651,13 @@
 
     if (w < 2 || h < 2) return;
 
+    // Placing a tracked redaction's box by hand on this frame
+    if ($boxPlacement) {
+      documentStore.placeKeyframe($boxPlacement, { x, y, width: w, height: h });
+      boxPlacement.set(null);
+      return;
+    }
+
     const newImageData = applyRectRedaction($imageStore.current, x, y, w, h, {
       style: $settingsStore.style,
       intensity: $settingsStore.intensity,
@@ -668,7 +667,7 @@
     imageStore.updateCurrent(newImageData);
     renderImage();
 
-    historyStore.push({
+    const id = historyStore.push({
       type: "rect",
       style: $settingsStore.style,
       region: { x, y, width: w, height: h },
@@ -677,6 +676,7 @@
       color: $settingsStore.fillColor,
       frames: documentStore.newRedactionFrames(),
     });
+    documentStore.followIfNeeded(id);
   }
 
   function applyBrushStroke() {
@@ -697,7 +697,7 @@
     imageStore.updateCurrent(newImageData);
     renderImage();
 
-    historyStore.push({
+    const id = historyStore.push({
       type: "brush",
       style: $settingsStore.style,
       region: null,
@@ -707,6 +707,7 @@
       color: $settingsStore.fillColor,
       frames: documentStore.newRedactionFrames(),
     });
+    documentStore.followIfNeeded(id);
   }
 </script>
 

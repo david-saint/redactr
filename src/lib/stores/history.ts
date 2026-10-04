@@ -6,6 +6,36 @@ export interface FrameRange {
   end: number;
 }
 
+export interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * A redaction that follows moving content. Its shape (region or brush
+ * points) is drawn relative to `anchor`; on each frame it is moved and scaled
+ * so `anchor` lands on that frame's box.
+ */
+export interface RedactionTrack {
+  anchor: Box;
+  /** Boxes placed by hand, which tracking starts from. */
+  keyframes: { frame: number; box: Box }[];
+  /**
+   * Where the anchor sits on each frame; null where the redaction isn't
+   * shown. Empty until tracking first succeeds: the redaction then stays
+   * where it was drawn, on every frame it covers.
+   */
+  boxes: (Box | null)[];
+  /** Match quality per frame: 1 for keyframes, 0 where the position was estimated. */
+  scores: number[];
+  /** Tracking was asked for and hasn't finished; filled in place when it does. */
+  pending?: boolean;
+  /** Why the last tracking attempt didn't finish. */
+  failure?: string;
+}
+
 export interface RedactionCommand {
   id: string;
   type: 'rect' | 'brush';
@@ -22,6 +52,8 @@ export interface RedactionCommand {
   color: string;
   /** Frames of an animation this applies to; omitted or null means every frame. */
   frames?: FrameRange | null;
+  /** Set when the redaction follows moving content in an animation. */
+  track?: RedactionTrack | null;
   timestamp: number;
 }
 
@@ -81,20 +113,61 @@ function createHistoryStore() {
     });
   }
 
+  function activeVersion(id: string) {
+    const state = get({ subscribe });
+    return resolveCommands(state.commands.slice(0, state.currentIndex + 1)).find(
+      c => c.id === id
+    );
+  }
+
   return {
     subscribe,
-    push: (command: Omit<RedactionCommand, 'id' | 'timestamp'>) => {
-      append({ ...command, id: crypto.randomUUID(), timestamp: Date.now() });
+    /** Add a redaction; returns its id. */
+    push: (command: Omit<RedactionCommand, 'id' | 'timestamp'>): string => {
+      const id = crypto.randomUUID();
+      append({ ...command, id, timestamp: Date.now() });
+      return id;
+    },
+    /**
+     * Make an active redaction follow moving content (or stop, with null),
+     * shown on `frames`, as an undoable step.
+     */
+    setTrack: (
+      id: string,
+      track: RedactionTrack | null,
+      frames: FrameRange | null
+    ): RedactionCommand | undefined => {
+      const target = activeVersion(id);
+      if (!target) return undefined;
+      const version = { ...target, track, frames, timestamp: Date.now() };
+      append(version);
+      return version;
+    },
+    /**
+     * Rewrite `from` and the later versions of the same redaction in place,
+     * without adding an undo step or touching the redo stack: for results of
+     * background work (tracking) started from `from`. Returns false if `from`
+     * is no longer in the history.
+     */
+    patchVersions: (
+      from: RedactionCommand,
+      patch: (version: RedactionCommand) => RedactionCommand
+    ): boolean => {
+      const state = get({ subscribe });
+      const start = state.commands.indexOf(from);
+      if (start < 0) return false;
+      const commands = state.commands.map((c, i) =>
+        i >= start && c.id === from.id ? patch(c) : c
+      );
+      set({ ...state, commands, version: state.version + 1 });
+      return true;
     },
     /**
      * Change which frames an active redaction applies to, as an undoable step.
      * `frames` of null means every frame.
      */
     setFrames: (id: string, frames: FrameRange | null) => {
-      const state = get({ subscribe });
-      const target = resolveCommands(
-        state.commands.slice(0, state.currentIndex + 1)
-      ).find(c => c.id === id);
+      const target = activeVersion(id);
       if (!target || sameFrames(target.frames ?? null, frames)) return;
       append({ ...target, frames, timestamp: Date.now() });
     },

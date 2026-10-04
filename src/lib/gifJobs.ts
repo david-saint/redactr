@@ -4,20 +4,33 @@
  * Each job decodes its own copy of the file with the worker's WASM instance.
  */
 
-import { createGifEncoder, decodeGif } from './wasm/redactor';
+import { createGifEncoder, decodeGif, trackRegion } from './wasm/redactor';
 import { replayCommands } from './redaction';
-import type { RedactionCommand } from './stores/history';
+import type { Box, RedactionCommand } from './stores/history';
+
+export interface Keyframe {
+  frame: number;
+  box: Box;
+}
+
+/** A finished tracking job: a box (or null) and a score for every frame. */
+export interface TrackResult {
+  boxes: (Box | null)[];
+  scores: number[];
+}
 
 /** Messages sent to the worker. */
 export type GifJobRequest =
   | { type: 'export'; bytes: ArrayBuffer; commands: RedactionCommand[] }
-  | { type: 'thumbnails'; bytes: ArrayBuffer; count: number; maxWidth: number; maxHeight: number };
+  | { type: 'thumbnails'; bytes: ArrayBuffer; count: number; maxWidth: number; maxHeight: number }
+  | { type: 'track'; bytes: ArrayBuffer; keyframes: Keyframe[] };
 
 /** Messages sent back from the worker. */
 export type GifJobResponse =
   | { type: 'progress'; done: number; total: number }
   | { type: 'exported'; bytes: Uint8Array }
   | { type: 'thumbnail'; index: number; frame: number; width: number; height: number; data: Uint8ClampedArray }
+  | { type: 'tracked'; result: TrackResult }
   | { type: 'complete' }
   | { type: 'error'; message: string };
 
@@ -150,6 +163,133 @@ export function renderThumbnails(
       const rgba = frameImage(doc.renderFrame(frame), width, height);
       onThumbnail(index, frame, size.width, size.height, downscale(rgba.data, width, height, size.width, size.height));
     });
+  } finally {
+    doc.free();
+  }
+}
+
+/** One tracking run: from a keyframe towards `to`, stopping early if lost. */
+export interface TrackRun {
+  from: number;
+  box: Box;
+  to: number;
+}
+
+/** A frame reached by a run, and how well it matched (0 = estimated). */
+export interface TrackedFrame {
+  frame: number;
+  box: Box;
+  score: number;
+}
+
+/** Keyframes sorted by frame, the last one winning for any repeated frame. */
+function sortKeyframes(keyframes: Keyframe[]): Keyframe[] {
+  const byFrame = new Map<number, Keyframe>();
+  for (const k of keyframes) byFrame.set(k.frame, k);
+  return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+}
+
+/**
+ * The runs that cover an animation from its keyframes: from each keyframe
+ * back to the previous one (or the start) and on to the next (or the end).
+ */
+export function trackRuns(frameCount: number, keyframes: Keyframe[]): TrackRun[] {
+  const sorted = sortKeyframes(keyframes);
+  const runs: TrackRun[] = [];
+  sorted.forEach((k, i) => {
+    const prev = i > 0 ? sorted[i - 1].frame : -1;
+    const next = i < sorted.length - 1 ? sorted[i + 1].frame : frameCount;
+    if (k.frame - 1 > prev) runs.push({ from: k.frame, box: k.box, to: prev + 1 });
+    if (k.frame + 1 < next) runs.push({ from: k.frame, box: k.box, to: next - 1 });
+  });
+  return runs;
+}
+
+function lerpBox(a: Box, b: Box, t: number): Box {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    width: a.width + (b.width - a.width) * t,
+    height: a.height + (b.height - a.height) * t
+  };
+}
+
+/**
+ * Combine runs into one box per frame. Keyframes are exact. Between two
+ * keyframes the better of the two runs wins, and frames neither run reached
+ * are interpolated between the keyframes (score 0), so the redaction never
+ * has a gap between boxes placed by hand. Beyond the outer keyframes, frames
+ * the runs didn't reach have no box.
+ */
+export function composeTrack(
+  frameCount: number,
+  keyframes: Keyframe[],
+  results: TrackedFrame[][]
+): TrackResult {
+  const sorted = sortKeyframes(keyframes);
+  const boxes: (Box | null)[] = new Array(frameCount).fill(null);
+  const scores: number[] = new Array(frameCount).fill(0);
+
+  for (const run of results) {
+    for (const step of run) {
+      if (step.frame < 0 || step.frame >= frameCount) continue;
+      if (!boxes[step.frame] || step.score > scores[step.frame]) {
+        boxes[step.frame] = step.box;
+        scores[step.frame] = step.score;
+      }
+    }
+  }
+
+  for (let i = 0; i + 1 < sorted.length; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    for (let f = a.frame + 1; f < b.frame; f++) {
+      if (!boxes[f]) {
+        boxes[f] = lerpBox(a.box, b.box, (f - a.frame) / (b.frame - a.frame));
+        scores[f] = 0;
+      }
+    }
+  }
+
+  for (const k of sorted) {
+    if (k.frame < 0 || k.frame >= frameCount) continue;
+    boxes[k.frame] = k.box;
+    scores[k.frame] = 1;
+  }
+  return { boxes, scores };
+}
+
+/** Track content from each keyframe through the whole animation. */
+export function trackFrames(
+  bytes: ArrayBuffer,
+  keyframes: Keyframe[],
+  onProgress: (done: number, total: number) => void
+): TrackResult {
+  const doc = decodeGif(new Uint8Array(bytes));
+  try {
+    const frameCount = doc.frameCount;
+    const runs = trackRuns(frameCount, keyframes);
+    const total = runs.reduce((sum, r) => sum + Math.abs(r.to - r.from), 0);
+    let done = 0;
+    const results = runs.map(run => {
+      const before = done;
+      const flat = trackRegion(doc, run.from, run.box, run.to, n => {
+        done = before + n;
+        onProgress(done, total);
+      });
+      done = before + Math.abs(run.to - run.from);
+      const steps: TrackedFrame[] = [];
+      for (let i = 0; i + 6 <= flat.length; i += 6) {
+        steps.push({
+          frame: flat[i],
+          box: { x: flat[i + 1], y: flat[i + 2], width: flat[i + 3], height: flat[i + 4] },
+          score: flat[i + 5]
+        });
+      }
+      return steps;
+    });
+    onProgress(total, total);
+    return composeTrack(frameCount, keyframes, results);
   } finally {
     doc.free();
   }

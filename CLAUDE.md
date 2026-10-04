@@ -51,9 +51,9 @@ src/
 │   ├── stores/          # Svelte stores (document, image, history, settings, theme)
 │   ├── gif.ts           # Animated GIF open/render (WASM GifDocument) + worker job client (export, thumbnails)
 │   ├── gif.worker.ts    # Module worker running one gifJobs.ts job on its own WASM instance
-│   ├── gifJobs.ts       # Worker-side GIF export (GifEncoder) and thumbnail rendering
+│   ├── gifJobs.ts       # Worker-side GIF export (GifEncoder), thumbnails, and tracking runs/composition
 │   ├── pdf.ts           # PDF.js loading/rendering + minimal image-only PDF writer
-│   ├── redaction.ts     # replayCommands(): rebuild an image (or one animation frame) from history commands
+│   ├── redaction.ts     # replayCommands()/placeOnFrame(): rebuild an image (or one animation frame) from history commands
 │   └── wasm/
 │       ├── redactor.ts  # TypeScript wrapper for WASM functions
 │       └── pkg/         # Generated WASM output (gitignored)
@@ -63,7 +63,8 @@ wasm/
 ├── Cargo.toml
 └── src/
     ├── lib.rs           # Rust redaction algorithms (solid_fill, pixelate, gaussian_blur)
-    └── animation.rs     # GIF decoding with frame compositing (GifDocument) and encoding (GifEncoder)
+    ├── animation.rs     # GIF decoding with frame compositing (GifDocument) and encoding (GifEncoder)
+    └── tracking.rs      # Motion tracking for redactions (trackRegion): template matching with zoom
 ```
 
 ## Key Patterns
@@ -73,7 +74,7 @@ wasm/
 - `documentStore`: The opened file (image, PDF or animated GIF). For PDFs it owns the PDF.js document, the current page index, and the undo stacks of pages that aren't on screen; `goToPage()` swaps the page into `imageStore`/`historyStore`, and `exportPdf()` replays each page's commands and writes a flattened PDF. For GIFs it owns the decoded animation, the current frame and playback; all frames share one history, `goToFrame()` replays the commands that apply to that frame, and `exportGif()` re-encodes every frame
 - `imageStore`: `id` changes only when a different image/page is loaded (not on edits or frame changes), so the canvas keeps its zoom
 - `imageStore`: Original and current image data (ImageData objects) for the image or the current PDF page
-- `historyStore`: Command pattern for undo/redo - stores redaction operations, not full image copies. A command's optional `frames` range limits it to some animation frames; `setFrames()` pushes a new version with the same id, and `resolveCommands()`/`activeCommands` collapse versions (latest wins, original drawing order)
+- `historyStore`: Command pattern for undo/redo - stores redaction operations, not full image copies. A command's optional `frames` range limits it to some animation frames, and an optional `track` makes it follow moving content (anchor box, hand-placed keyframes, a box and match score per frame). `setFrames()`/`setTrack()` push a new version with the same id, and `resolveCommands()`/`activeCommands` collapse versions (latest wins, original drawing order)
 - `settingsStore`: Active tool, redaction style, intensity, brush size, fill color
 - `theme`: Light/dark/system preference with localStorage persistence
 
@@ -99,6 +100,9 @@ TypeScript wrapper (`src/lib/wasm/redactor.ts`) handles initialization and provi
 - New redactions cover every frame unless the "This frame" scope is chosen in the timeline (`settingsStore.frameScope`, `documentStore.newRedactionFrames()`)
 - Export (`GifEncoder`) writes a new file with only pixels, delays and loop count: per-frame palettes (NeuQuant above 256 colors), changed-rectangle frames when consecutive frames are opaque, identical frames merged
 - Export and thumbnails run in `gif.worker.ts` (one short-lived worker per job, cancelled when the GIF closes); the worker decodes its own copy of the file bytes kept on `GifSource.bytes`. Vite's `worker.format` is `es` because the worker lazy-loads the WASM module
+- Tracking (`documentStore.trackRedaction()`, `placeKeyframe()`, `untrack()`, `cancelTracking(id)`; `trackingStatus`, `boxPlacement`): asking is an undoable step that appends a version with `track.pending`; the worker result is filled into that version (and later versions of the same request) in place with `historyStore.patchVersions()`, so edits made meanwhile and the redo stack survive. Until a track has boxes (pending, failed with `track.failure`, cancelled) the redaction stays where it was drawn on every frame it covers. One job runs at a time; `exportGif()` waits for tracking to finish. Workers run `trackRegion` out from each keyframe; `composeTrack()` keeps keyframes exact, picks the better run between keyframes and interpolates gaps. `placeOnFrame()` moves/scales a tracked redaction onto a frame with at least `TRACK_PADDING` frame pixels. A tracked redaction's range is limited to `trackedSpan()`. The "Follow" scope tracks new redactions automatically (covering every frame until tracked)
+- `tracking.rs`: normalized cross-correlation on contrast-normalized luminance (so a cursor can't outweigh thin text), coarse-to-fine with a scale search, anchor plus median-of-recent-matches templates, motion prediction; holds course through short losses (score 0 = estimated) and follows content leaving the frame until it is entirely gone; tall templates compare every few rows (`TEMPLATE_ROWS`) to stay fast
+- `applyRectRedaction` clips rectangles to the image (tracked boxes are often partly off-screen; negative coordinates would wrap in the unsigned WASM parameters)
 - `FrameTimeline.svelte`: play/scrub (`,` `.` `K`), scope toggle, a thumbnail strip (`frameThumbnails`, with redactions covered), and one track per redaction: drag the ends or the bar to change its frames (arrow keys on the focused handles), or use the range fields
 
 ### Canvas Rendering
