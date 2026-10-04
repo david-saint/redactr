@@ -153,7 +153,7 @@
       );
 
       // Push to history
-      historyStore.push({
+      const id = historyStore.push({
         type: "rect",
         style: $settingsStore.style,
         region: { x, y, width, height },
@@ -162,6 +162,7 @@
         color: $settingsStore.fillColor,
         frames: documentStore.newRedactionFrames(),
       });
+      documentStore.followIfNeeded(id);
     }
 
     imageStore.updateCurrent(currentData);

@@ -15,7 +15,7 @@ vi.mock('../wasm/redactor', () => ({
   })
 }));
 
-import { replayCommands, appliesToFrame } from '../redaction';
+import { replayCommands, appliesToFrame, placeOnFrame, commandBounds, TRACK_PADDING } from '../redaction';
 
 const rect = (x: number, frames = null) => ({
   id: `r${x}`,
@@ -67,5 +67,79 @@ describe('replayCommands', () => {
     const image = original();
     replayCommands(image, commands, 1);
     expect(applied(image)).toEqual([]);
+  });
+});
+
+describe('tracked redactions', () => {
+  const track = (boxes) => ({
+    anchor: { x: 10, y: 20, width: 40, height: 10 },
+    keyframes: [{ frame: 0, box: { x: 10, y: 20, width: 40, height: 10 } }],
+    boxes,
+    scores: boxes.map(() => 1)
+  });
+  const tracked = {
+    ...rect(10),
+    region: { x: 10, y: 20, width: 40, height: 10 },
+    track: track([
+      { x: 10, y: 20, width: 40, height: 10 },
+      { x: 30, y: 5, width: 80, height: 20 },
+      null
+    ])
+  };
+
+  it('should only apply on frames with a box', () => {
+    expect([0, 1, 2].map((f) => appliesToFrame(tracked, f))).toEqual([true, true, false]);
+    expect(placeOnFrame(tracked, 2)).toBe(null);
+  });
+
+  it('should respect the frame range as well', () => {
+    expect(appliesToFrame({ ...tracked, frames: { start: 1, end: 1 } }, 0)).toBe(false);
+  });
+
+  it('should move and scale a box onto each frame, with padding', () => {
+    const p = TRACK_PADDING;
+    expect(placeOnFrame(tracked, 0).region).toEqual({
+      x: 10 - p,
+      y: 20 - p,
+      width: 40 + 2 * p,
+      height: 10 + 2 * p
+    });
+    // Twice the size at (30, 5)
+    expect(placeOnFrame(tracked, 1).region).toEqual({
+      x: 30 - 2 * p,
+      y: 5 - 2 * p,
+      width: 80 + 4 * p,
+      height: 20 + 4 * p
+    });
+  });
+
+  it('should move and scale brush strokes with the box', () => {
+    const brush = {
+      ...tracked,
+      type: 'brush',
+      region: null,
+      points: [10, 20, 50, 30],
+      brushSize: 4
+    };
+    const placed = placeOnFrame(brush, 1);
+    expect(placed.points).toEqual([30, 5, 110, 25]);
+    expect(placed.brushSize).toBe(8 + TRACK_PADDING * 4);
+  });
+
+  it('should replay a tracked redaction where it sits on that frame', () => {
+    const image = new ImageData(4, 1);
+    const moved = { ...tracked, region: { x: 10, y: 20, width: 40, height: 10 } };
+    // The mock records the x of each region applied.
+    expect(applied(replayCommands(image, [moved], 1))).toEqual([30 - 2 * TRACK_PADDING]);
+    expect(applied(replayCommands(image, [moved], 2))).toEqual([]);
+  });
+
+  it('should bound brush strokes including their width', () => {
+    expect(commandBounds({ ...rect(1), region: null, points: [10, 10, 20, 30], brushSize: 6 })).toEqual({
+      x: 7,
+      y: 7,
+      width: 16,
+      height: 26
+    });
   });
 });

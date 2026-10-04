@@ -10,6 +10,7 @@ import {
   errorMessage,
   exportFrames,
   renderThumbnails,
+  trackFrames,
   type GifJobRequest,
   type GifJobResponse
 } from './gifJobs';
@@ -30,6 +31,11 @@ self.onmessage = async (event: MessageEvent<GifJobRequest>) => {
         post({ type: 'progress', done, total })
       );
       post({ type: 'exported', bytes }, [bytes.buffer]);
+    } else if (request.type === 'track') {
+      const result = trackFrames(request.bytes, request.keyframes, (done, total) =>
+        post({ type: 'progress', done, total })
+      );
+      post({ type: 'tracked', result });
     } else {
       renderThumbnails(
         request.bytes,

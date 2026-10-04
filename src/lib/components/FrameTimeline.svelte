@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { documentStore, frameThumbnails, THUMBNAIL_HEIGHT } from '../stores/document';
+  import {
+    documentStore,
+    frameThumbnails,
+    trackingStatus,
+    boxPlacement,
+    THUMBNAIL_HEIGHT
+  } from '../stores/document';
   import { imageStore } from '../stores/image';
   import {
     historyStore,
@@ -10,7 +16,7 @@
     type RedactionCommand
   } from '../stores/history';
   import { thumbnailFrames } from '../gifJobs';
-  import { appliesToFrame } from '../redaction';
+  import { placeOnFrame } from '../redaction';
   import type { FrameThumbnail } from '../gif';
   import { settingsStore, type FrameScope } from '../stores/settings';
   import { detectionStore } from '../stores/detection';
@@ -20,8 +26,11 @@
   const styleLabels = { solid: 'Solid', pixelate: 'Pixelate', blur: 'Blur' };
   const scopes: { id: FrameScope; label: string }[] = [
     { id: 'all', label: 'All frames' },
-    { id: 'current', label: 'This frame' }
+    { id: 'current', label: 'This frame' },
+    { id: 'follow', label: 'Follow' }
   ];
+  /** Tracked frames scoring below this are flagged for review. */
+  const WEAK_SCORE = 0.55;
 
   let frameCount = $derived($documentStore.frameCount);
   let current = $derived($documentStore.currentFrame);
@@ -31,7 +40,15 @@
   );
   let selectedIndex = $derived(selected ? $activeCommands.indexOf(selected) : -1);
 
-  onDestroy(() => selectedRedactionId.set(null));
+  onDestroy(() => {
+    selectedRedactionId.set(null);
+    boxPlacement.set(null);
+  });
+
+  // Placing a box is for the selected redaction; selecting another cancels it.
+  $effect(() => {
+    if ($boxPlacement && $boxPlacement !== $selectedRedactionId) boxPlacement.set(null);
+  });
 
   /**
    * A pointer drag in a track lane or the thumbnail strip: `seek` scrubs the
@@ -98,8 +115,9 @@
       const scale = image.width / (imageWidth || image.width);
       ctx.save();
       ctx.scale(scale, scale);
-      for (const cmd of commands) {
-        if (!appliesToFrame(cmd, frame)) continue;
+      for (const command of commands) {
+        const cmd = placeOnFrame(command, frame);
+        if (!cmd) continue;
         const fill = cmd.style === 'solid' ? cmd.color : 'rgb(113, 113, 122)';
         if (cmd.region) {
           ctx.fillStyle = fill;
@@ -124,6 +142,29 @@
     };
     draw(params);
     return { update: draw };
+  }
+
+  /**
+   * For a tracked redaction: runs of frames where the box was estimated or
+   * matched weakly (worth checking), and the frames placed by hand.
+   */
+  function trackMarks(cmd: RedactionCommand) {
+    const weak: FrameRange[] = [];
+    const track = cmd.track;
+    if (!track) return { weak, keys: [] as number[] };
+    track.boxes.forEach((box, f) => {
+      if (!box || track.scores[f] >= WEAK_SCORE) return;
+      const last = weak[weak.length - 1];
+      if (last && last.end === f - 1) last.end = f;
+      else weak.push({ start: f, end: f });
+    });
+    return { weak, keys: track.keyframes.map(k => k.frame) };
+  }
+
+  function startPlacement(id: string) {
+    documentStore.pause();
+    settingsStore.setTool('rect');
+    boxPlacement.set($boxPlacement === id ? null : id);
   }
 
   function rangeOf(cmd: RedactionCommand) {
@@ -450,7 +491,9 @@
       Redactions you draw appear here, one track each.
       {$settingsStore.frameScope === 'all'
         ? 'New ones cover every frame; drag a track\'s ends to the frames that need it.'
-        : 'New ones cover only the frame on screen.'}
+        : $settingsStore.frameScope === 'follow'
+          ? 'New ones follow the content under them as it moves.'
+          : 'New ones cover only the frame on screen.'}
     </p>
   {:else}
     <div class="tracks">
@@ -470,6 +513,7 @@
           <div
             class="lane"
             class:dragging={drag?.id === cmd.id}
+            class:tracking={$trackingStatus.running?.id === cmd.id}
             onpointerdown={(e) => beginDrag(e, cmd)}
             onpointermove={moveDrag}
             onpointerup={(e) => endDrag(e, true)}
@@ -505,6 +549,19 @@
               style:left={percent(range.end + 1)}
               onkeydown={(e) => handleHandleKey(e, cmd, 'end')}
             ></span>
+            {#if cmd.track}
+              {@const marks = trackMarks(cmd)}
+              {#each marks.weak as weak}
+                <span
+                  class="weak"
+                  style:left={percent(weak.start)}
+                  style:width={percent(weak.end - weak.start + 1)}
+                ></span>
+              {/each}
+              {#each marks.keys as key}
+                <span class="keyframe" style:left={percent(key + 0.5)}></span>
+              {/each}
+            {/if}
             <span class="playhead" style:left={percent(current + 0.5)}></span>
           </div>
         </div>
@@ -543,6 +600,50 @@
           <button onclick={() => setRange(0, frameCount - 1)}>All frames</button>
         </div>
       </div>
+
+      <div class="follow-row">
+        {#if $trackingStatus.running?.id === selected.id}
+          {@const run = $trackingStatus.running}
+          <span class="follow-status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            Following {label(selected, selectedIndex)}…
+            {run.total ? `${run.done}/${run.total} frames` : ''}
+          </span>
+          <button onclick={() => documentStore.cancelTracking()}>Cancel</button>
+        {:else if $trackingStatus.queued.includes(selected.id)}
+          <span class="follow-status">Waiting to follow…</span>
+          <button onclick={() => documentStore.cancelTracking()}>Cancel</button>
+        {:else if selected.track}
+          {@const marks = trackMarks(selected)}
+          <span class="follow-status">
+            Follows its content{marks.weak.length
+              ? ` · ${marks.weak.reduce((n, w) => n + w.end - w.start + 1, 0)} frames to check`
+              : ''}
+          </span>
+          <button
+            class:active={$boxPlacement === selected.id}
+            aria-pressed={$boxPlacement === selected.id}
+            onclick={() => startPlacement(selected.id)}
+          >
+            Fix box on this frame
+          </button>
+          <button onclick={() => documentStore.trackRedaction(selected.id)}>Re-track</button>
+          <button onclick={() => documentStore.untrack(selected.id)}>Stop following</button>
+        {:else}
+          <button onclick={() => documentStore.trackRedaction(selected.id)}>
+            Follow content from this frame
+          </button>
+        {/if}
+        {#if $trackingStatus.error?.id === selected.id}
+          <span class="follow-error" role="alert">{$trackingStatus.error.message}</span>
+        {/if}
+      </div>
+      {#if $boxPlacement === selected.id}
+        <p class="placement-hint" role="status">
+          Draw where {label(selected, selectedIndex)} belongs on frame {current + 1}; the
+          other frames re-track from it. Esc cancels.
+        </p>
+      {/if}
     {/if}
   {/if}
 </section>
@@ -712,6 +813,87 @@
 
   .track.selected .bar {
     opacity: 1;
+  }
+
+  .weak {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    border-radius: 3px;
+    background: repeating-linear-gradient(
+      45deg,
+      rgba(234, 88, 12, 0.85) 0 4px,
+      rgba(234, 88, 12, 0.35) 4px 8px
+    );
+    pointer-events: none;
+  }
+
+  .keyframe {
+    position: absolute;
+    top: 50%;
+    width: 9px;
+    height: 9px;
+    margin: -4.5px 0 0 -4.5px;
+    transform: rotate(45deg);
+    border-radius: 2px;
+    background: var(--bg-secondary);
+    border: 2px solid var(--accent);
+    pointer-events: none;
+  }
+
+  .lane.tracking .bar {
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--accent) 0 6px,
+      var(--accent-subtle) 6px 12px
+    );
+    opacity: 1;
+  }
+
+  .follow-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    font-size: 0.75rem;
+  }
+
+  .follow-row button {
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.75rem;
+  }
+
+  .follow-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .follow-error {
+    color: var(--danger);
+  }
+
+  .placement-hint {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .handle {

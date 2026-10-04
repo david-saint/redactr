@@ -24,7 +24,8 @@ vi.mock('../../pdf', async (importOriginal) => {
 const gifMock = {
   openGif: vi.fn(),
   exportGif: vi.fn(),
-  renderGifThumbnails: vi.fn()
+  renderGifThumbnails: vi.fn(),
+  trackGif: vi.fn()
 };
 
 // The real module loads WASM and workers; those are tested separately.
@@ -34,8 +35,12 @@ vi.mock('../../gif', () => ({
   openGif: (...args) => gifMock.openGif(...args),
   exportGif: (...args) => gifMock.exportGif(...args),
   renderGifThumbnails: (...args) => gifMock.renderGifThumbnails(...args),
+  trackGif: (...args) => gifMock.trackGif(...args),
   GifJobCancelled: class GifJobCancelled extends Error {}
 }));
+
+// The mocked module's cancellation error, so cancelled jobs look real.
+let GifJobCancelled: any = Error;
 
 /** A worker job the test settles by hand; cancelling rejects it. */
 function deferredJob() {
@@ -47,7 +52,8 @@ function deferredJob() {
   return {
     promise,
     resolve,
-    cancel: vi.fn(() => reject(new Error('cancelled')))
+    reject,
+    cancel: vi.fn(() => reject(new GifJobCancelled('cancelled')))
   };
 }
 
@@ -59,7 +65,8 @@ vi.mock('../../redaction', () => ({
     data[0] = 200 + commands.length;
     data[1] = frame ?? 255;
     return new ImageData(data, original.width, original.height);
-  })
+  }),
+  commandBounds: (cmd) => cmd.region
 }));
 
 function createSource(pageCount = 3) {
@@ -108,6 +115,7 @@ describe('documentStore', () => {
   let settingsStore: any;
   let isGif: any;
   let frameThumbnails: any;
+  let trackingStatus: any;
   let source: ReturnType<typeof createSource>;
 
   beforeEach(async () => {
@@ -116,8 +124,11 @@ describe('documentStore', () => {
     source = createSource();
     pdfMock.openPdf.mockResolvedValue(source);
 
+    ({ GifJobCancelled } = await import('../../gif'));
     gifMock.renderGifThumbnails.mockImplementation(() => deferredJob());
-    ({ documentStore, isPdf, isGif, frameThumbnails } = await import('../document'));
+    ({ documentStore, isPdf, isGif, frameThumbnails, trackingStatus } = await import(
+      '../document'
+    ));
     ({ imageStore } = await import('../image'));
     ({ historyStore } = await import('../history'));
     ({ settingsStore } = await import('../settings'));
@@ -453,6 +464,150 @@ describe('documentStore', () => {
 
         expect(job.cancel).toHaveBeenCalled();
         expect(get(frameThumbnails)).toEqual({ count: 0, items: [] });
+      });
+    });
+
+    describe('tracking', () => {
+      const flush = () => new Promise((r) => setTimeout(r, 0));
+      const at = (x: number) => ({ x, y: 0, width: 1, height: 1 });
+      let jobs;
+
+      beforeEach(() => {
+        jobs = [];
+        gifMock.trackGif.mockImplementation(() => {
+          const job = deferredJob();
+          jobs.push(job);
+          return job;
+        });
+      });
+
+      it('should follow a redaction from the frame on screen', async () => {
+        documentStore.goToFrame(2);
+        const id = historyStore.push(rect);
+
+        documentStore.trackRedaction(id);
+
+        const [bytes, keyframes] = gifMock.trackGif.mock.calls[0];
+        expect(bytes).toBe(gif.bytes);
+        expect(keyframes).toEqual([{ frame: 2, box: rect.region }]);
+        expect(get(trackingStatus).running).toMatchObject({ id });
+
+        const result = { boxes: [null, at(1), at(2), at(3)], scores: [0, 0.9, 1, 0.4] };
+        jobs[0].resolve(result);
+        await flush();
+
+        const cmd = historyStore.getActiveCommands()[0];
+        expect(cmd.track).toEqual({ anchor: rect.region, keyframes, ...result });
+        expect(cmd.frames).toEqual({ start: 1, end: 3 });
+        expect(get(trackingStatus).running).toBe(null);
+      });
+
+      it('should cover every frame when the content never leaves', async () => {
+        const id = historyStore.push(rect);
+        documentStore.trackRedaction(id);
+        jobs[0].resolve({ boxes: [at(0), at(1), at(2), at(3)], scores: [1, 1, 1, 1] });
+        await flush();
+
+        expect(historyStore.getActiveCommands()[0].frames ?? null).toBe(null);
+      });
+
+      it('should track one redaction at a time, in order', async () => {
+        const first = historyStore.push(rect);
+        const second = historyStore.push(rect);
+
+        documentStore.trackRedaction(first);
+        documentStore.trackRedaction(second);
+        expect(gifMock.trackGif).toHaveBeenCalledTimes(1);
+        expect(get(trackingStatus).queued).toEqual([second]);
+
+        jobs[0].resolve({ boxes: [at(0), null, null, null], scores: [1, 0, 0, 0] });
+        await flush();
+
+        expect(gifMock.trackGif).toHaveBeenCalledTimes(2);
+        expect(get(trackingStatus).running.id).toBe(second);
+      });
+
+      it('should start a queued track from the frame shown when it was asked for', async () => {
+        const first = historyStore.push(rect);
+        const second = historyStore.push(rect);
+        documentStore.goToFrame(1);
+        documentStore.trackRedaction(first);
+        documentStore.trackRedaction(second);
+        documentStore.goToFrame(3);
+
+        jobs[0].resolve({ boxes: [null, at(1), null, null], scores: [0, 1, 0, 0] });
+        await flush();
+
+        expect(gifMock.trackGif.mock.calls[1][1]).toEqual([{ frame: 1, box: rect.region }]);
+      });
+
+      it('should report a failure and carry on with the queue', async () => {
+        const first = historyStore.push(rect);
+        const second = historyStore.push(rect);
+        documentStore.trackRedaction(first);
+        documentStore.trackRedaction(second);
+
+        jobs[0].reject(new Error('There is no detail under the box to follow'));
+        await flush();
+
+        expect(get(trackingStatus).error).toEqual({
+          id: first,
+          message: 'There is no detail under the box to follow'
+        });
+        expect(historyStore.getActiveCommands()[0].track ?? null).toBe(null);
+        expect(get(trackingStatus).running.id).toBe(second);
+      });
+
+      it('should re-track from all keyframes when a box is placed by hand', async () => {
+        const id = historyStore.push(rect);
+        documentStore.trackRedaction(id);
+        jobs[0].resolve({ boxes: [at(0), at(1), at(2), at(3)], scores: [1, 1, 1, 1] });
+        await flush();
+
+        documentStore.goToFrame(3);
+        documentStore.placeKeyframe(id, at(9));
+
+        expect(gifMock.trackGif.mock.calls[1][1]).toEqual([
+          { frame: 0, box: rect.region },
+          { frame: 3, box: at(9) }
+        ]);
+      });
+
+      it('should stop following and keep the frame range', async () => {
+        const id = historyStore.push(rect);
+        documentStore.trackRedaction(id);
+        jobs[0].resolve({ boxes: [null, at(1), at(2), null], scores: [0, 1, 1, 0] });
+        await flush();
+
+        documentStore.untrack(id);
+
+        const cmd = historyStore.getActiveCommands()[0];
+        expect(cmd.track).toBe(null);
+        expect(cmd.frames).toEqual({ start: 1, end: 2 });
+      });
+
+      it('should only follow new redactions in the follow scope', () => {
+        const id = historyStore.push(rect);
+        documentStore.followIfNeeded(id);
+        expect(gifMock.trackGif).not.toHaveBeenCalled();
+
+        settingsStore.setFrameScope('follow');
+        documentStore.goToFrame(1);
+        expect(documentStore.newRedactionFrames()).toEqual({ start: 1, end: 1 });
+        documentStore.followIfNeeded(id);
+        expect(gifMock.trackGif).toHaveBeenCalledTimes(1);
+      });
+
+      it('should cancel tracking and drop the queue when the GIF closes', async () => {
+        documentStore.trackRedaction(historyStore.push(rect));
+        documentStore.trackRedaction(historyStore.push(rect));
+
+        await documentStore.close();
+        await flush();
+
+        expect(jobs[0].cancel).toHaveBeenCalled();
+        expect(gifMock.trackGif).toHaveBeenCalledTimes(1);
+        expect(get(trackingStatus)).toEqual({ running: null, queued: [], error: null });
       });
     });
 

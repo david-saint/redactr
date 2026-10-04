@@ -3,12 +3,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const wasm = {
   decodeGif: vi.fn(),
-  createGifEncoder: vi.fn()
+  createGifEncoder: vi.fn(),
+  trackRegion: vi.fn()
 };
 
 vi.mock('../wasm/redactor', () => ({
   decodeGif: (...args) => wasm.decodeGif(...args),
-  createGifEncoder: (...args) => wasm.createGifEncoder(...args)
+  createGifEncoder: (...args) => wasm.createGifEncoder(...args),
+  trackRegion: (...args) => wasm.trackRegion(...args)
 }));
 
 // Replaying marks the frame's first pixel with the frame index + 100.
@@ -26,7 +28,10 @@ import {
   thumbnailFrames,
   thumbnailSize,
   downscale,
-  errorMessage
+  errorMessage,
+  trackRuns,
+  composeTrack,
+  trackFrames
 } from '../gifJobs';
 
 function fakeDocument(frameCount = 3, width = 4, height = 2) {
@@ -162,6 +167,130 @@ describe('renderThumbnails', () => {
       [1, 2, 2, 1, 3],
       [2, 4, 2, 1, 5]
     ]);
+    expect(doc.free).toHaveBeenCalled();
+  });
+});
+
+const box = (x: number) => ({ x, y: 0, width: 10, height: 5 });
+
+describe('trackRuns', () => {
+  it('should run out from a single keyframe both ways', () => {
+    expect(trackRuns(10, [{ frame: 4, box: box(1) }])).toEqual([
+      { from: 4, box: box(1), to: 0 },
+      { from: 4, box: box(1), to: 9 }
+    ]);
+  });
+
+  it('should run between keyframes from both ends and skip empty gaps', () => {
+    const runs = trackRuns(10, [
+      { frame: 6, box: box(2) },
+      { frame: 0, box: box(1) },
+      { frame: 7, box: box(3) }
+    ]);
+    expect(runs.map((r) => [r.from, r.to])).toEqual([
+      [0, 5],
+      [6, 1],
+      [7, 9]
+    ]);
+  });
+
+  it('should use the latest keyframe placed on a frame', () => {
+    const runs = trackRuns(3, [
+      { frame: 1, box: box(1) },
+      { frame: 1, box: box(9) }
+    ]);
+    expect(runs.every((r) => r.box.x === 9)).toBe(true);
+  });
+});
+
+describe('composeTrack', () => {
+  it('should keep keyframes exact and take the better of two runs', () => {
+    const result = composeTrack(
+      5,
+      [
+        { frame: 0, box: box(0) },
+        { frame: 4, box: box(40) }
+      ],
+      [
+        [
+          { frame: 1, box: box(11), score: 0.9 },
+          { frame: 2, box: box(21), score: 0.6 },
+          { frame: 4, box: box(99), score: 0.99 }
+        ],
+        [
+          { frame: 2, box: box(22), score: 0.8 },
+          { frame: 1, box: box(12), score: 0.7 }
+        ]
+      ]
+    );
+    // Frame 3: neither run reached it, so it's interpolated between the keyframes.
+    expect(result.boxes.map((b) => b.x)).toEqual([0, 11, 22, 30, 40]);
+    expect(result.scores).toEqual([1, 0.9, 0.8, 0, 1]);
+  });
+
+  it('should fill gaps between keyframes by interpolation, never leaving holes', () => {
+    const result = composeTrack(
+      5,
+      [
+        { frame: 0, box: box(0) },
+        { frame: 4, box: { x: 40, y: 8, width: 20, height: 9 } }
+      ],
+      []
+    );
+    expect(result.boxes[2]).toEqual({ x: 20, y: 4, width: 15, height: 7 });
+    expect(result.scores[2]).toBe(0);
+  });
+
+  it('should leave frames beyond the reach of the outer runs empty', () => {
+    const result = composeTrack(6, [{ frame: 2, box: box(2) }], [
+      [{ frame: 1, box: box(1), score: 0.9 }],
+      [{ frame: 3, box: box(3), score: 0.8 }]
+    ]);
+    expect(result.boxes.map((b) => b?.x ?? null)).toEqual([null, 1, 2, 3, null, null]);
+  });
+});
+
+describe('trackFrames', () => {
+  beforeEach(() => {
+    wasm.decodeGif.mockReset();
+    wasm.trackRegion.mockReset();
+  });
+
+  it('should track every run, report overall progress and compose the result', () => {
+    const doc = fakeDocument(4);
+    wasm.decodeGif.mockReturnValue(doc);
+    wasm.trackRegion.mockImplementation((_doc, from, b, to, progress) => {
+      const out = [];
+      const step = to > from ? 1 : -1;
+      for (let f = from + step, n = 1; step > 0 ? f <= to : f >= to; f += step, n++) {
+        out.push(f, b.x + f, 0, 10, 5, 0.9);
+        progress(n);
+      }
+      return new Float64Array(out);
+    });
+    const progress = vi.fn();
+
+    const result = trackFrames(new ArrayBuffer(1), [{ frame: 1, box: box(100) }], progress);
+
+    expect(wasm.trackRegion.mock.calls.map(([, from, , to]) => [from, to])).toEqual([
+      [1, 0],
+      [1, 3]
+    ]);
+    expect(result.boxes.map((b) => b.x)).toEqual([100, 100, 102, 103]);
+    expect(result.scores).toEqual([0.9, 1, 0.9, 0.9]);
+    expect(progress.mock.calls.map(([d]) => d)).toEqual([1, 2, 3, 3]);
+    expect(progress).toHaveBeenLastCalledWith(3, 3);
+    expect(doc.free).toHaveBeenCalled();
+  });
+
+  it('should free the decoder when tracking fails', () => {
+    const doc = fakeDocument(4);
+    wasm.decodeGif.mockReturnValue(doc);
+    wasm.trackRegion.mockImplementation(() => {
+      throw 'There is no detail under the box to follow';
+    });
+
+    expect(() => trackFrames(new ArrayBuffer(1), [{ frame: 0, box: box(1) }], () => {})).toThrow();
     expect(doc.free).toHaveBeenCalled();
   });
 });

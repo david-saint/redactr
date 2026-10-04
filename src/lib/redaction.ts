@@ -1,10 +1,77 @@
-import type { RedactionCommand } from './stores/history';
+import type { Box, RedactionCommand } from './stores/history';
 import { applyRectRedaction, applyBrushRedaction } from './wasm/redactor';
+
+/**
+ * Extra coverage around a tracked redaction, in pixels at the size it was
+ * drawn, since a tracked box can be off by a pixel or two.
+ */
+export const TRACK_PADDING = 3;
 
 /** Whether a redaction applies to the given 0-based animation frame. */
 export function appliesToFrame(command: RedactionCommand, frame: number): boolean {
   const range = command.frames;
-  return !range || (frame >= range.start && frame <= range.end);
+  if (range && (frame < range.start || frame > range.end)) return false;
+  return !command.track || !!command.track.boxes[frame];
+}
+
+/** The box around a redaction's shape: its region, or its brush stroke. */
+export function commandBounds(cmd: RedactionCommand): Box | null {
+  if (cmd.region) return cmd.region;
+  if (!cmd.points || cmd.points.length < 2) return null;
+  const pad = (cmd.brushSize || 20) / 2;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i + 1 < cmd.points.length; i += 2) {
+    minX = Math.min(minX, cmd.points[i]);
+    maxX = Math.max(maxX, cmd.points[i]);
+    minY = Math.min(minY, cmd.points[i + 1]);
+    maxY = Math.max(maxY, cmd.points[i + 1]);
+  }
+  return {
+    x: minX - pad,
+    y: minY - pad,
+    width: maxX - minX + pad * 2,
+    height: maxY - minY + pad * 2
+  };
+}
+
+/**
+ * The redaction as drawn on an animation frame: null when it doesn't apply
+ * there, moved and scaled (with padding) when it follows moving content.
+ */
+export function placeOnFrame(
+  cmd: RedactionCommand,
+  frame: number
+): RedactionCommand | null {
+  if (!appliesToFrame(cmd, frame)) return null;
+  const track = cmd.track;
+  if (!track) return cmd;
+
+  const box = track.boxes[frame]!;
+  const { anchor } = track;
+  const sx = box.width / anchor.width;
+  const sy = box.height / anchor.height;
+  const mapX = (x: number) => box.x + (x - anchor.x) * sx;
+  const mapY = (y: number) => box.y + (y - anchor.y) * sy;
+  const padX = TRACK_PADDING * sx;
+  const padY = TRACK_PADDING * sy;
+
+  if (cmd.region) {
+    const { x, y, width, height } = cmd.region;
+    return {
+      ...cmd,
+      region: {
+        x: mapX(x) - padX,
+        y: mapY(y) - padY,
+        width: width * sx + padX * 2,
+        height: height * sy + padY * 2
+      }
+    };
+  }
+  return {
+    ...cmd,
+    points: cmd.points?.map((v, i) => (i % 2 === 0 ? mapX(v) : mapY(v))) ?? null,
+    brushSize: (cmd.brushSize || 20) * Math.max(sx, sy) + TRACK_PADDING * 2 * Math.max(sx, sy)
+  };
 }
 
 /**
@@ -23,8 +90,9 @@ export function replayCommands(
     original.height
   );
 
-  for (const cmd of commands) {
-    if (frame !== undefined && !appliesToFrame(cmd, frame)) continue;
+  for (const command of commands) {
+    const cmd = frame === undefined ? command : placeOnFrame(command, frame);
+    if (!cmd) continue;
 
     const options = {
       style: cmd.style,

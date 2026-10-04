@@ -429,4 +429,43 @@ describe('historyStore', () => {
       expect(get(activeCommands)).toEqual([]);
     });
   });
+
+  describe('setTrack', () => {
+    const rect = {
+      type: 'rect',
+      style: 'solid',
+      region: { x: 1, y: 0, width: 1, height: 1 },
+      points: null,
+      intensity: 50,
+      color: '#000000'
+    };
+    const track = {
+      anchor: { x: 1, y: 0, width: 1, height: 1 },
+      keyframes: [],
+      boxes: [null, { x: 5, y: 5, width: 1, height: 1 }],
+      scores: [0, 1]
+    };
+
+    it('should return the id of a pushed redaction', () => {
+      const id = historyStore.push(rect);
+      expect(get(activeCommands)[0].id).toBe(id);
+    });
+
+    it('should make a redaction follow content as an undoable step', () => {
+      const id = historyStore.push(rect);
+
+      historyStore.setTrack(id, track, { start: 1, end: 1 });
+      expect(get(activeCommands)).toHaveLength(1);
+      expect(get(activeCommands)[0]).toMatchObject({ id, track, frames: { start: 1, end: 1 } });
+
+      historyStore.undo();
+      expect(get(activeCommands)[0].track ?? null).toBe(null);
+      expect(get(activeCommands)[0].frames ?? null).toBe(null);
+    });
+
+    it('should ignore redactions that are not active', () => {
+      historyStore.setTrack('missing', track, null);
+      expect(get(historyStore).commands).toEqual([]);
+    });
+  });
 });

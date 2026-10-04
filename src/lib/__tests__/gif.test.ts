@@ -16,6 +16,7 @@ import {
   openGif,
   exportGif,
   renderGifThumbnails,
+  trackGif,
   GifError,
   GifJobCancelled
 } from '../gif';
@@ -235,6 +236,23 @@ describe('worker jobs', () => {
     expect(thumbnail.frame).toBe(7);
     expect(thumbnail.image.width).toBe(2);
     expect(Array.from(thumbnail.image.data)).toEqual(new Array(8).fill(9));
+    expect(worker.terminated).toBe(true);
+  });
+
+  it('should track in a worker and resolve with the per-frame result', async () => {
+    const keyframes = [{ frame: 3, box: { x: 1, y: 2, width: 3, height: 4 } }];
+    const progress = vi.fn();
+    const job = trackGif(bytes(), keyframes, progress);
+    const worker = FakeWorker.instances[0];
+
+    expect(worker.sent[0]).toMatchObject({ type: 'track', keyframes });
+
+    const result = { boxes: [null, { x: 1, y: 2, width: 3, height: 4 }], scores: [0, 1] };
+    worker.reply({ type: 'progress', done: 2, total: 5 });
+    worker.reply({ type: 'tracked', result });
+
+    expect(await job.promise).toEqual(result);
+    expect(progress).toHaveBeenCalledWith(2, 5);
     expect(worker.terminated).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
  */
 
 import { decodeGif, wasmReady } from './wasm/redactor';
-import type { GifJobRequest, GifJobResponse } from './gifJobs';
+import type { GifJobRequest, GifJobResponse, Keyframe, TrackResult } from './gifJobs';
 import type { RedactionCommand } from './stores/history';
 
 const GIF_EXTENSION = /\.gif$/i;
@@ -220,4 +220,22 @@ export function renderGifThumbnails(
       }
     }
   );
+}
+
+/**
+ * Follow content through the animation from hand-placed keyframes, in a
+ * worker. `onProgress` is called with frames done out of the total.
+ */
+export function trackGif(
+  bytes: ArrayBuffer,
+  keyframes: Keyframe[],
+  onProgress?: (done: number, total: number) => void
+): GifJob<TrackResult> {
+  return runJob<TrackResult>({ type: 'track', bytes, keyframes }, (message, resolve) => {
+    if (message.type === 'progress') {
+      onProgress?.(message.done, message.total);
+    } else if (message.type === 'tracked') {
+      resolve(message.result);
+    }
+  });
 }

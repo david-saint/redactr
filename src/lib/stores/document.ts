@@ -3,16 +3,19 @@ import { imageStore } from './image';
 import {
   historyStore,
   resolveCommands,
+  type Box,
   type FrameRange,
   type HistorySnapshot
 } from './history';
 import { settingsStore } from './settings';
-import { replayCommands } from '../redaction';
+import { commandBounds, replayCommands } from '../redaction';
+import type { Keyframe, TrackResult } from '../gifJobs';
 import {
   isGifFile,
   openGif,
   exportGif as exportGifInWorker,
   renderGifThumbnails,
+  trackGif,
   playbackDelay,
   GifJobCancelled,
   type FrameThumbnail,
@@ -81,6 +84,24 @@ function createThumbnailStore() {
 
 export const frameThumbnails = createThumbnailStore();
 
+/** Progress of the tracking job running for a redaction, and the last failure. */
+export interface TrackingStatus {
+  running: { id: string; done: number; total: number } | null;
+  /** Redactions waiting their turn. */
+  queued: string[];
+  error: { id: string; message: string } | null;
+}
+
+const idleTracking: TrackingStatus = { running: null, queued: [], error: null };
+
+export const trackingStatus = writable<TrackingStatus>(idleTracking);
+
+/**
+ * Set to a redaction's id while the user draws where it belongs on the frame
+ * on screen; the next rectangle drawn becomes that redaction's keyframe.
+ */
+export const boxPlacement = writable<string | null>(null);
+
 const initialState: DocumentState = {
   kind: null,
   pageCount: 0,
@@ -101,6 +122,9 @@ function createDocumentStore() {
   // Incremented on every navigation/open/close so stale async work is dropped.
   let token = 0;
   let playTimer: ReturnType<typeof setTimeout> | null = null;
+  // Redactions waiting to be tracked, with the keyframes to track from.
+  let trackQueue: { id: string; keyframes?: Keyframe[] }[] = [];
+  let trackJob: GifJob<TrackResult> | null = null;
   // Worker jobs for the open GIF, cancelled when it closes.
   const jobs = new Set<GifJob<unknown>>();
 
@@ -121,6 +145,9 @@ function createDocumentStore() {
   /** Release the open document; callers bump `token` first. */
   async function teardown() {
     stopTimer();
+    boxPlacement.set(null);
+    trackQueue = [];
+    trackingStatus.set(idleTracking);
     for (const job of jobs) job.cancel();
     jobs.clear();
     frameThumbnails.reset();
@@ -350,7 +377,122 @@ function createDocumentStore() {
     if (state.kind !== 'gif' || get(settingsStore).frameScope === 'all') {
       return null;
     }
+    // A redaction that will follow its content starts on this frame only,
+    // until tracking finds where else it is.
     return { start: state.currentFrame, end: state.currentFrame };
+  }
+
+  /** Start following a newly added redaction if the user asked for that. */
+  function followIfNeeded(id: string) {
+    if (get({ subscribe }).kind === 'gif' && get(settingsStore).frameScope === 'follow') {
+      trackRedaction(id);
+    }
+  }
+
+  function updateTracking(fn: (s: TrackingStatus) => TrackingStatus) {
+    trackingStatus.update(fn);
+  }
+
+  /**
+   * Make a redaction follow the content under it through the animation. With
+   * no keyframes, it starts from where it sits on the frame on screen (or
+   * re-tracks from its existing keyframes). Jobs run one at a time.
+   */
+  function trackRedaction(id: string, keyframes?: Keyframe[]) {
+    if (!gif || get({ subscribe }).kind !== 'gif') return;
+    // A new track starts from the frame on screen now, not when its turn comes.
+    if (!keyframes) {
+      const cmd = historyStore.getActiveCommands().find(c => c.id === id);
+      const bounds = cmd && !cmd.track ? commandBounds(cmd) : null;
+      if (bounds) keyframes = [{ frame: get({ subscribe }).currentFrame, box: bounds }];
+    }
+    trackQueue = [...trackQueue.filter(q => q.id !== id), { id, keyframes }];
+    updateTracking(s => ({
+      ...s,
+      queued: trackQueue.map(q => q.id),
+      error: s.error?.id === id ? null : s.error
+    }));
+    if (!trackJob) void runNextTrack();
+  }
+
+  /** Place a redaction's box on the frame on screen by hand, and re-track. */
+  function placeKeyframe(id: string, box: Box) {
+    const cmd = historyStore.getActiveCommands().find(c => c.id === id);
+    if (!cmd) return;
+    const frame = get({ subscribe }).currentFrame;
+    const existing = cmd.track?.keyframes ?? [];
+    trackRedaction(id, [...existing.filter(k => k.frame !== frame), { frame, box }]);
+  }
+
+  /** Stop following content; the redaction keeps its frame range. */
+  function untrack(id: string) {
+    const cmd = historyStore.getActiveCommands().find(c => c.id === id);
+    if (!cmd?.track) return;
+    trackQueue = trackQueue.filter(q => q.id !== id);
+    if (get(trackingStatus).running?.id === id) trackJob?.cancel();
+    historyStore.setTrack(id, null, cmd.frames ?? null);
+  }
+
+  function cancelTracking() {
+    trackQueue = [];
+    trackJob?.cancel();
+    updateTracking(() => idleTracking);
+  }
+
+  async function runNextTrack() {
+    const source = gif;
+    const next = trackQueue.shift();
+    if (!source || !next) {
+      updateTracking(s => ({ ...s, running: null, queued: [] }));
+      return;
+    }
+    updateTracking(s => ({
+      ...s,
+      running: { id: next.id, done: 0, total: 0 },
+      queued: trackQueue.map(q => q.id)
+    }));
+
+    const cmd = historyStore.getActiveCommands().find(c => c.id === next.id);
+    const bounds = cmd && (cmd.track?.anchor ?? commandBounds(cmd));
+    if (!cmd || !bounds) {
+      void runNextTrack();
+      return;
+    }
+    const keyframes = next.keyframes ??
+      cmd.track?.keyframes ?? [{ frame: get({ subscribe }).currentFrame, box: bounds }];
+
+    const job = trackGif(source.bytes, keyframes, (done, total) =>
+      updateTracking(s => ({ ...s, running: { id: next.id, done, total } }))
+    );
+    trackJob = job;
+    try {
+      const result = await track(job).promise;
+      if (gif !== source) return;
+      const shown = result.boxes.flatMap((b, i) => (b ? [i] : []));
+      const frames =
+        shown.length === 0
+          ? null
+          : shown[0] === 0 && shown[shown.length - 1] === source.frameCount - 1
+            ? null
+            : { start: shown[0], end: shown[shown.length - 1] };
+      historyStore.setTrack(
+        next.id,
+        { anchor: bounds, keyframes, boxes: result.boxes, scores: result.scores },
+        frames
+      );
+    } catch (e) {
+      // A closed GIF's tracking result or failure no longer matters.
+      if (gif === source && !(e instanceof GifJobCancelled)) {
+        updateTracking(s => ({
+          ...s,
+          error: { id: next.id, message: e instanceof Error ? e.message : String(e) }
+        }));
+      }
+    } finally {
+      if (trackJob === job) trackJob = null;
+    }
+    // Carry on with the queue unless the GIF was closed meanwhile.
+    if (gif === source) void runNextTrack();
   }
 
   /**
@@ -436,6 +578,11 @@ function createDocumentStore() {
     play,
     pause,
     newRedactionFrames,
+    followIfNeeded,
+    trackRedaction,
+    placeKeyframe,
+    untrack,
+    cancelTracking,
     exportGif
   };
 }

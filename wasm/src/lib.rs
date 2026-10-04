@@ -1,8 +1,10 @@
 use wasm_bindgen::prelude::*;
 
 mod animation;
+mod tracking;
 
 pub use animation::{GifDocument, GifEncoder};
+pub use tracking::track_region;
 
 #[wasm_bindgen(start)]
 pub fn init() {
