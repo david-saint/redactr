@@ -24,6 +24,8 @@ let currentAbortController: AbortController | null = null;
  * 5. Repeat until target score or max steps reached
  */
 export async function startRalphLisaLoop(): Promise<void> {
+  // Results belong to the animation frame on screen; hold it still.
+  documentStore.pause();
   const state = sotaStore.getState();
 
   if (!state.apiKey) {

@@ -307,6 +307,36 @@ describe('documentStore', () => {
       expect(still.destroy).toHaveBeenCalled();
     });
 
+    it('should start each GIF with new redactions covering every frame', async () => {
+      settingsStore.setFrameScope('current');
+      gifMock.openGif.mockResolvedValue(createGif());
+
+      await documentStore.open(gifFile());
+
+      expect(get(settingsStore).frameScope).toBe('all');
+    });
+
+    it('should keep the last of two quickly opened files', async () => {
+      // A PDF whose teardown is slow, so the first open is still closing it.
+      await documentStore.open(pdfFile());
+      let finishDestroy;
+      source.destroy.mockImplementationOnce(() => new Promise((r) => (finishDestroy = r)));
+      const gifA = createGif();
+      const gifB = createGif(3);
+      gifMock.openGif.mockImplementation(async (file) => (file.name === 'a.gif' ? gifA : gifB));
+
+      const first = documentStore.open(new File(['GIF89a'], 'a.gif', { type: 'image/gif' }));
+      const second = documentStore.open(new File(['GIF89a'], 'b.gif', { type: 'image/gif' }));
+      await second;
+      finishDestroy();
+      await first;
+
+      expect(get(imageStore).name).toBe('b.gif');
+      expect(get(documentStore).frameCount).toBe(3);
+      expect(gifMock.openGif.mock.calls.map(([f]) => f.name)).not.toContain('a.gif');
+      expect(gifB.destroy).not.toHaveBeenCalled();
+    });
+
     it('should destroy the GIF when closing or opening another file', async () => {
       await documentStore.open(pdfFile());
       expect(gif.destroy).toHaveBeenCalled();

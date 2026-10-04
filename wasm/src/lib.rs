@@ -34,7 +34,9 @@ pub fn solid_fill(
                 data[idx] = r;
                 data[idx + 1] = g;
                 data[idx + 2] = b;
-                // Keep alpha unchanged
+                // Opaque, so the shape of what was covered doesn't survive
+                // as a silhouette in transparent images.
+                data[idx + 3] = 255;
             }
         }
     }
@@ -253,10 +255,12 @@ pub fn brush_solid_fill(
                     let py = cy + dy;
                     if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                         let idx = ((py as u32 * width + px as u32) * 4) as usize;
-                        if idx + 2 < data.len() {
+                        if idx + 3 < data.len() {
                             data[idx] = r;
                             data[idx + 1] = g;
                             data[idx + 2] = b;
+                            // Opaque, like solid_fill
+                            data[idx + 3] = 255;
                         }
                     }
                 }
@@ -444,16 +448,28 @@ mod tests {
     }
 
     #[test]
-    fn test_solid_fill_preserves_alpha() {
+    fn test_solid_fill_makes_pixels_opaque() {
         let mut data = create_test_image(10, 10);
-        
-        // Set a custom alpha value
-        data[0 * 4 + 3] = 100;
-        
-        solid_fill(&mut data, 10, 10, 0, 0, 1, 1, 255, 255, 255);
-        
-        // Alpha should be preserved
-        assert_eq!(data[0 * 4 + 3], 100);
+
+        // Transparent and semi-transparent pixels under the fill
+        data[3] = 0;
+        data[4 + 3] = 100;
+
+        solid_fill(&mut data, 10, 10, 0, 0, 2, 1, 255, 255, 255);
+
+        // No silhouette of the covered content survives in the alpha channel
+        assert_eq!(data[3], 255);
+        assert_eq!(data[4 + 3], 255);
+    }
+
+    #[test]
+    fn test_brush_solid_fill_makes_pixels_opaque() {
+        let mut data = vec![0u8; 10 * 10 * 4];
+
+        brush_solid_fill(&mut data, 10, 10, &[5.0, 5.0], 4, 0, 0, 0);
+
+        assert_eq!(data[(5 * 10 + 5) * 4 + 3], 255);
+        assert_eq!(data[3], 0, "pixels outside the brush are untouched");
     }
 
     #[test]

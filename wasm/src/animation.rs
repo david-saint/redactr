@@ -19,7 +19,8 @@ use wasm_bindgen::prelude::*;
 /// Largest canvas (in pixels) we agree to composite.
 const MAX_CANVAS_PIXELS: u64 = 4096 * 4096;
 /// Upper bound on the decoded (palette-indexed) frame data kept in memory.
-const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;
+/// The page may hold up to three decodes at once (editor, thumbnails, export).
+const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
 /// Memory budget for the full-canvas snapshots that make random access fast.
 const CHECKPOINT_BUDGET: u64 = 64 * 1024 * 1024;
 /// NeuQuant sampling factor: 1 is best quality, 30 fastest; 10 is the usual compromise.
@@ -345,9 +346,14 @@ impl GifEncoder {
         }
 
         if let Some(pending) = &mut self.pending {
-            if pending.pixels == pixels {
-                pending.delay = pending.delay.saturating_add(delay);
-                return Ok(());
+            // Browsers show delays of 0 or 1 as 10, so summing those would
+            // shorten the animation; keep such frames separate.
+            let total = pending.delay.checked_add(delay);
+            if let Some(total) = total.filter(|_| pending.delay > 1 && delay > 1) {
+                if pending.pixels == pixels {
+                    pending.delay = total;
+                    return Ok(());
+                }
             }
         }
         if let Some(pending) = self.pending.take() {
@@ -768,6 +774,34 @@ mod tests {
         assert_eq!(frames, vec![a, b]);
         assert_eq!(doc.delays(), vec![25, 10]);
         assert_eq!(doc.repeat(), 3);
+    }
+
+    #[test]
+    fn encoder_keeps_identical_frames_with_tiny_delays() {
+        let a = solid(2, 2, RED);
+        let bytes = encode(
+            2,
+            2,
+            &[
+                (a.clone(), 0),
+                (a.clone(), 1),
+                (a.clone(), 1),
+                (a.clone(), 5),
+            ],
+            -1,
+        );
+        let (doc, frames) = decode_all(&bytes);
+        // Browsers play 0 and 1 as 10, so merging them would shorten the animation.
+        assert_eq!(doc.delays(), vec![0, 1, 1, 5]);
+        assert_eq!(frames.len(), 4);
+    }
+
+    #[test]
+    fn encoder_does_not_overflow_merged_delays() {
+        let a = solid(2, 2, RED);
+        let bytes = encode(2, 2, &[(a.clone(), u16::MAX - 1), (a.clone(), 10)], -1);
+        let (doc, _) = decode_all(&bytes);
+        assert_eq!(doc.delays(), vec![u16::MAX - 1, 10]);
     }
 
     #[test]

@@ -115,6 +115,11 @@ function createDocumentStore() {
 
   async function close() {
     token++;
+    await teardown();
+  }
+
+  /** Release the open document; callers bump `token` first. */
+  async function teardown() {
     stopTimer();
     for (const job of jobs) job.cancel();
     jobs.clear();
@@ -158,6 +163,8 @@ function createDocumentStore() {
 
     gif = source;
     fileName = file.name;
+    // A "This frame" choice from a previous GIF must not silently carry over.
+    settingsStore.setFrameScope('all');
     set({
       ...initialState,
       kind: 'gif',
@@ -186,8 +193,11 @@ function createDocumentStore() {
   }
 
   async function open(file: File) {
-    await close();
-    const openToken = token;
+    // Claim the token before tearing down: if another open() starts while we
+    // wait, it takes over and this one stops.
+    const openToken = ++token;
+    await teardown();
+    if (openToken !== token) return;
 
     if (isGifFile(file)) {
       await openAnimation(file, openToken);

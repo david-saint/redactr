@@ -15,6 +15,7 @@
   import { settingsStore, type FrameScope } from '../stores/settings';
   import { detectionStore } from '../stores/detection';
   import { cancelDetection } from '../detection/manager';
+  import { cancelRalphLisaLoop } from '../detection/sota';
 
   const styleLabels = { solid: 'Solid', pixelate: 'Pixelate', blur: 'Blur' };
   const scopes: { id: FrameScope; label: string }[] = [
@@ -111,6 +112,8 @@
           ctx.lineJoin = 'round';
           ctx.beginPath();
           ctx.moveTo(cmd.points[0], cmd.points[1]);
+          // Repeat the first point so a single dab still draws a dot.
+          ctx.lineTo(cmd.points[0], cmd.points[1]);
           for (let i = 2; i + 1 < cmd.points.length; i += 2) {
             ctx.lineTo(cmd.points[i], cmd.points[i + 1]);
           }
@@ -131,12 +134,16 @@
     return `${cmd.type === 'rect' ? 'Box' : 'Brush'} ${index + 1}`;
   }
 
+  /** Detection results belong to the frame they were computed on. */
+  function dropDetections() {
+    cancelDetection();
+    cancelRalphLisaLoop();
+    detectionStore.clearResults();
+  }
+
   function seek(index: number) {
     if (index < 0 || index >= frameCount || index === current) return;
-
-    // Detection results belong to the frame they were computed on.
-    cancelDetection();
-    detectionStore.clearResults();
+    dropDetections();
 
     try {
       documentStore.goToFrame(index);
@@ -154,8 +161,7 @@
     if (playing) {
       documentStore.pause();
     } else {
-      cancelDetection();
-      detectionStore.clearResults();
+      dropDetections();
       documentStore.play();
     }
   }
@@ -169,10 +175,23 @@
     return Math.min(frameCount - 1, Math.max(0, Math.round(frame)));
   }
 
-  function frameAt(e: PointerEvent, el: HTMLElement) {
+  /** Position across an element, in frames (0 at the left edge). */
+  function framePosition(e: PointerEvent, el: HTMLElement) {
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0) return current;
-    return clampFrame(Math.floor(((e.clientX - rect.left) / rect.width) * frameCount));
+    return ((e.clientX - rect.left) / rect.width) * frameCount;
+  }
+
+  function frameAt(e: PointerEvent, el: HTMLElement) {
+    return clampFrame(Math.floor(framePosition(e, el)));
+  }
+
+  /**
+   * Handles sit on the boundaries between frames, so dragging one snaps to
+   * the nearest boundary: boundary b starts frame b and ends frame b - 1.
+   */
+  function boundaryAt(e: PointerEvent, el: HTMLElement) {
+    return Math.min(frameCount, Math.max(0, Math.round(framePosition(e, el))));
   }
 
   /** The range to draw for a redaction, including an edit being dragged. */
@@ -219,17 +238,20 @@
 
   function moveDrag(e: PointerEvent) {
     if (!drag || drag.pointerId !== e.pointerId) return;
-    const frame = frameAt(e, e.currentTarget as HTMLElement);
+    const el = e.currentTarget as HTMLElement;
+    const frame = frameAt(e, el);
     const { initial } = drag;
 
     if (drag.mode === 'seek') {
       seek(frame);
     } else if (drag.mode === 'start') {
-      drag.range = { start: Math.min(frame, initial.end), end: initial.end };
-      seek(drag.range.start);
+      const start = Math.min(boundaryAt(e, el), initial.end);
+      drag.range = { start, end: initial.end };
+      seek(start);
     } else if (drag.mode === 'end') {
-      drag.range = { start: initial.start, end: Math.max(frame, initial.start) };
-      seek(drag.range.end);
+      const end = Math.max(boundaryAt(e, el) - 1, initial.start);
+      drag.range = { start: initial.start, end };
+      seek(end);
     } else {
       const delta = Math.max(
         -initial.start,
@@ -290,14 +312,19 @@
   /** Inputs show 1-based frame numbers. */
   function handleRangeInput(e: Event, edge: 'start' | 'end') {
     if (!selected) return;
-    const value = Number((e.currentTarget as HTMLInputElement).value) - 1;
-    if (!Number.isFinite(value)) return;
+    const input = e.currentTarget as HTMLInputElement;
+    const value = Number(input.value) - 1;
     const range = rangeOf(selected);
-    if (edge === 'start') {
-      setRange(value, Math.max(value, range.end));
-    } else {
-      setRange(Math.min(value, range.start), value);
+    if (Number.isFinite(value)) {
+      if (edge === 'start') {
+        setRange(value, Math.max(value, range.end));
+      } else {
+        setRange(Math.min(value, range.start), value);
+      }
     }
+    // Show the stored value even when the typed one was clamped or ignored.
+    const updated = selected ? rangeOf(selected) : range;
+    input.value = String((edge === 'start' ? updated.start : updated.end) + 1);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -305,10 +332,10 @@
     if (target?.closest('input, textarea, select, [contenteditable]')) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-    if (e.key === ',' || e.key === 'PageUp') {
+    if (e.key === ',') {
       e.preventDefault();
       step(-1);
-    } else if (e.key === '.' || e.key === 'PageDown') {
+    } else if (e.key === '.') {
       e.preventDefault();
       step(1);
     } else if (e.key === 'k' || e.key === 'K') {
