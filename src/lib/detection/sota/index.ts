@@ -5,6 +5,7 @@ import { get } from "svelte/store";
 import { sotaStore } from "../../stores/sota";
 import { imageStore } from "../../stores/image";
 import { historyStore } from "../../stores/history";
+import { documentStore } from "../../stores/document";
 import { applyRectRedaction, type RedactionOptions } from "../../wasm/redactor";
 import { evaluateWithLisa } from "./lisa";
 import { planWithRalph } from "./ralph";
@@ -203,6 +204,7 @@ async function applyRedactions(
         points: null,
         intensity: redaction.intensity,
         color: "#000000",
+        frames: documentStore.newRedactionFrames(),
       });
 
       applied.push(redaction);

@@ -1,5 +1,9 @@
 use wasm_bindgen::prelude::*;
 
+mod animation;
+
+pub use animation::{GifDocument, GifEncoder};
+
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]

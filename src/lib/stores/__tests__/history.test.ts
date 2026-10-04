@@ -365,4 +365,68 @@ describe('historyStore', () => {
       expect(snapshot.commands.length).toBe(1);
     });
   });
+  describe('setFrames', () => {
+    const rect = (x: number) => ({
+      type: 'rect',
+      style: 'solid',
+      region: { x, y: 0, width: 1, height: 1 },
+      points: null,
+      intensity: 50,
+      color: '#000000'
+    });
+
+    it('should change a redaction\'s frames in place, keeping its id and order', () => {
+      historyStore.push(rect(1));
+      historyStore.push(rect(2));
+      const [first, second] = get(activeCommands);
+
+      historyStore.setFrames(first.id, { start: 2, end: 5 });
+
+      const active = get(activeCommands);
+      expect(active).toHaveLength(2);
+      expect(active[0]).toMatchObject({ id: first.id, region: { x: 1 }, frames: { start: 2, end: 5 } });
+      expect(active[1].id).toBe(second.id);
+      expect(historyStore.getActiveCommands()).toEqual(active);
+    });
+
+    it('should be undoable and redoable', () => {
+      historyStore.push(rect(1));
+      const [cmd] = get(activeCommands);
+
+      historyStore.setFrames(cmd.id, { start: 0, end: 0 });
+      historyStore.setFrames(cmd.id, { start: 1, end: 3 });
+      expect(get(activeCommands)[0].frames).toEqual({ start: 1, end: 3 });
+
+      historyStore.undo();
+      expect(get(activeCommands)[0].frames).toEqual({ start: 0, end: 0 });
+      historyStore.undo();
+      expect(get(activeCommands)[0].frames ?? null).toBe(null);
+      expect(get(activeCommands)).toHaveLength(1);
+
+      historyStore.redo();
+      expect(get(activeCommands)[0].frames).toEqual({ start: 0, end: 0 });
+    });
+
+    it('should ignore unknown ids and unchanged ranges', () => {
+      historyStore.push(rect(1));
+      const [cmd] = get(activeCommands);
+
+      historyStore.setFrames('missing', { start: 0, end: 0 });
+      historyStore.setFrames(cmd.id, null);
+      historyStore.setFrames(cmd.id, { start: 1, end: 1 });
+      historyStore.setFrames(cmd.id, { start: 1, end: 1 });
+
+      expect(get(historyStore).commands).toHaveLength(2);
+    });
+
+    it('should not edit a redaction that has been undone', () => {
+      historyStore.push(rect(1));
+      const [cmd] = get(activeCommands);
+      historyStore.undo();
+
+      historyStore.setFrames(cmd.id, { start: 0, end: 0 });
+
+      expect(get(activeCommands)).toEqual([]);
+    });
+  });
 });

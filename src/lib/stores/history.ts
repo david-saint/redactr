@@ -1,5 +1,11 @@
 import { writable, derived, get } from 'svelte/store';
 
+/** Inclusive range of 0-based animation frames. */
+export interface FrameRange {
+  start: number;
+  end: number;
+}
+
 export interface RedactionCommand {
   id: string;
   type: 'rect' | 'brush';
@@ -14,7 +20,28 @@ export interface RedactionCommand {
   brushSize?: number;
   intensity: number;
   color: string;
+  /** Frames of an animation this applies to; omitted or null means every frame. */
+  frames?: FrameRange | null;
   timestamp: number;
+}
+
+/**
+ * The redactions in effect for a stack of commands. Editing a redaction (e.g.
+ * changing its frame range) pushes a new version with the same id, so the edit
+ * can be undone; the latest version takes the original's place in the drawing
+ * order.
+ */
+export function resolveCommands(commands: RedactionCommand[]): RedactionCommand[] {
+  const resolved: RedactionCommand[] = [];
+  for (const command of commands) {
+    const index = resolved.findIndex(c => c.id === command.id);
+    if (index >= 0) {
+      resolved[index] = command;
+    } else {
+      resolved.push(command);
+    }
+  }
+  return resolved;
 }
 
 interface HistoryState {
@@ -29,6 +56,11 @@ export interface HistorySnapshot {
   currentIndex: number;
 }
 
+function sameFrames(a: FrameRange | null, b: FrameRange | null): boolean {
+  if (!a || !b) return a === b;
+  return a.start === b.start && a.end === b.end;
+}
+
 const initialState: HistoryState = {
   commands: [],
   currentIndex: -1,
@@ -38,22 +70,33 @@ const initialState: HistoryState = {
 function createHistoryStore() {
   const { subscribe, set, update } = writable<HistoryState>(initialState);
 
+  function append(command: RedactionCommand) {
+    update(state => {
+      const commands = state.commands.slice(0, state.currentIndex + 1);
+      return {
+        commands: [...commands, command],
+        currentIndex: commands.length,
+        version: state.version + 1
+      };
+    });
+  }
+
   return {
     subscribe,
     push: (command: Omit<RedactionCommand, 'id' | 'timestamp'>) => {
-      update(state => {
-        const commands = state.commands.slice(0, state.currentIndex + 1);
-        const newCommand: RedactionCommand = {
-          ...command,
-          id: crypto.randomUUID(),
-          timestamp: Date.now()
-        };
-        return {
-          commands: [...commands, newCommand],
-          currentIndex: commands.length,
-          version: state.version + 1
-        };
-      });
+      append({ ...command, id: crypto.randomUUID(), timestamp: Date.now() });
+    },
+    /**
+     * Change which frames an active redaction applies to, as an undoable step.
+     * `frames` of null means every frame.
+     */
+    setFrames: (id: string, frames: FrameRange | null) => {
+      const state = get({ subscribe });
+      const target = resolveCommands(
+        state.commands.slice(0, state.currentIndex + 1)
+      ).find(c => c.id === id);
+      if (!target || sameFrames(target.frames ?? null, frames)) return;
+      append({ ...target, frames, timestamp: Date.now() });
     },
     undo: () => {
       update(state => {
@@ -88,9 +131,10 @@ function createHistoryStore() {
         version: state.version + 1
       }));
     },
+    /** Redactions in effect, with edits resolved. */
     getActiveCommands: () => {
       const state = get({ subscribe });
-      return state.commands.slice(0, state.currentIndex + 1);
+      return resolveCommands(state.commands.slice(0, state.currentIndex + 1));
     }
   };
 }
@@ -102,7 +146,9 @@ export const canRedo = derived(
   historyStore,
   $history => $history.currentIndex < $history.commands.length - 1
 );
-export const activeCommands = derived(
-  historyStore,
-  $history => $history.commands.slice(0, $history.currentIndex + 1)
+export const activeCommands = derived(historyStore, $history =>
+  resolveCommands($history.commands.slice(0, $history.currentIndex + 1))
 );
+
+/** The redaction highlighted in the frame timeline and on the canvas. */
+export const selectedRedactionId = writable<string | null>(null);

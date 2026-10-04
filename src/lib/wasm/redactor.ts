@@ -1,6 +1,8 @@
 // TypeScript wrapper for WASM redaction functions
 // The actual WASM module will be at ./pkg after running wasm-pack
 
+import type { GifDocument, GifEncoder } from './pkg/redactr_wasm';
+
 let wasmModule: typeof import('./pkg/redactr_wasm') | null = null;
 
 // Auto-initialize WASM when module is imported
@@ -164,4 +166,20 @@ export function applyBrushRedaction(
   }
 
   return new ImageData(new Uint8ClampedArray(data.buffer), imageData.width, imageData.height);
+}
+
+/** Decode a GIF. Throws the decoder's message (a string) for invalid files. */
+export function decodeGif(bytes: Uint8Array): GifDocument {
+  if (!wasmModule) {
+    throw new Error('WASM module not initialized');
+  }
+  return new wasmModule.GifDocument(bytes);
+}
+
+/** Start a new GIF. `repeat`: -1 loops forever, 0 plays once, n repeats n more times. */
+export function createGifEncoder(width: number, height: number, repeat: number): GifEncoder {
+  if (!wasmModule) {
+    throw new Error('WASM module not initialized');
+  }
+  return new wasmModule.GifEncoder(width, height, repeat);
 }

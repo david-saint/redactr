@@ -2,6 +2,7 @@
   import { documentStore } from '../stores/document';
   import { isHeicFile } from '../heic';
   import { isPdfFile, PdfPasswordError } from '../pdf';
+  import { isGifFile, GifError } from '../gif';
 
   let isDragging = false;
   let fileInput: HTMLInputElement;
@@ -44,7 +45,12 @@
     error = null;
 
     const pdf = isPdfFile(file);
-    if (!pdf && !file.type.startsWith('image/') && !isHeicFile(file)) {
+    if (
+      !pdf &&
+      !file.type.startsWith('image/') &&
+      !isHeicFile(file) &&
+      !isGifFile(file)
+    ) {
       error = 'Please select an image or PDF file';
       return;
     }
@@ -54,7 +60,7 @@
       await documentStore.open(file);
     } catch (e) {
       console.error(e);
-      if (e instanceof PdfPasswordError) {
+      if (e instanceof PdfPasswordError || e instanceof GifError) {
         error = e.message;
       } else {
         error = pdf ? 'Failed to open PDF' : 'Failed to load image';

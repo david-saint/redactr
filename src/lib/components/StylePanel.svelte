@@ -1,7 +1,7 @@
 <script lang="ts">
   import { settingsStore, type RedactionStyle } from '../stores/settings';
   import { imageStore } from '../stores/image';
-  import { documentStore, isPdf } from '../stores/document';
+  import { documentStore, isPdf, isGif } from '../stores/document';
   import { downloadBlob, redactedFileName } from '../download';
 
   const styles: { id: RedactionStyle; label: string; icon: string }[] = [
@@ -57,7 +57,11 @@
         );
       });
 
-      const suffix = $isPdf ? `-page-${$documentStore.currentPage + 1}` : '';
+      const suffix = $isPdf
+        ? `-page-${$documentStore.currentPage + 1}`
+        : $isGif
+          ? `-frame-${$documentStore.currentFrame + 1}`
+          : '';
       downloadBlob(blob, redactedFileName($imageStore.name, format, suffix));
     } finally {
       exporting = false;
@@ -75,6 +79,23 @@
       downloadBlob(blob, redactedFileName($imageStore.name, 'pdf'));
     } catch (e) {
       console.error('Failed to export PDF:', e);
+    } finally {
+      exporting = false;
+      exportProgress = '';
+    }
+  }
+
+  async function handleExportGif() {
+    exporting = true;
+    exportProgress = '';
+
+    try {
+      const blob = await documentStore.exportGif((done, total) => {
+        exportProgress = `${done}/${total}`;
+      });
+      downloadBlob(blob, redactedFileName($imageStore.name, 'gif'));
+    } catch (e) {
+      console.error('Failed to export GIF:', e);
     } finally {
       exporting = false;
       exportProgress = '';
@@ -195,7 +216,7 @@
   <div class="panel-section export-section">
     <span class="section-label">Export</span>
     {#if $isPdf}
-      <button on:click={handleExportPdf} disabled={exporting} class="export-button primary pdf-export">
+      <button on:click={handleExportPdf} disabled={exporting} class="export-button primary document-export">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
@@ -207,6 +228,19 @@
         Pages are flattened to images, so hidden text and metadata are removed.
       </p>
       <span class="export-sublabel">Current page</span>
+    {:else if $isGif}
+      <button on:click={handleExportGif} disabled={exporting} class="export-button primary document-export">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        {exportProgress ? `Exporting ${exportProgress}` : 'Animated GIF'}
+      </button>
+      <p class="export-note">
+        Every frame is re-encoded, so comments and other metadata are removed.
+      </p>
+      <span class="export-sublabel">Current frame</span>
     {/if}
     <div class="export-options">
       <button on:click={() => handleExport('png')} disabled={exporting} class="export-button">
@@ -374,7 +408,7 @@
     border-top: 1px solid var(--border);
   }
 
-  .export-button.pdf-export {
+  .export-button.document-export {
     flex-direction: row;
     width: 100%;
     justify-content: center;

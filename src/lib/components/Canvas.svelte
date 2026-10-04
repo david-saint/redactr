@@ -5,8 +5,10 @@
   import {
     historyStore,
     activeCommands,
+    selectedRedactionId,
     type RedactionCommand,
   } from "../stores/history";
+  import { documentStore } from "../stores/document";
   import {
     detectionStore,
     type Detection,
@@ -71,14 +73,21 @@
   $: canvasHeight = $imageStore.height;
 
   // Render image when it first loads or changes
+  let lastImageId = -1;
   $: if ($imageStore.current && ctx) {
-    // Reset zoom when image changes
-    zoomStore.reset();
-    // Defer to ensure canvas dimensions are updated in DOM
-    requestAnimationFrame(() => {
-      fitToContainer();
+    if ($imageStore.id !== lastImageId) {
+      // A different image or page: reset zoom and fit it to the view
+      lastImageId = $imageStore.id;
+      zoomStore.reset();
+      // Defer to ensure canvas dimensions are updated in DOM
+      requestAnimationFrame(() => {
+        fitToContainer();
+        renderImage();
+      });
+    } else {
+      // Same image redrawn (an edit, or another animation frame): keep the view
       renderImage();
-    });
+    }
   }
 
   // Rebuild image when active commands change (undo/redo)
@@ -147,8 +156,32 @@
   function rebuildImage(commands: RedactionCommand[]) {
     if (!$imageStore.original || !isWasmReady()) return;
 
-    imageStore.updateCurrent(replayCommands($imageStore.original, commands));
+    const frame =
+      $documentStore.kind === "gif" ? $documentStore.currentFrame : undefined;
+    imageStore.updateCurrent(
+      replayCommands($imageStore.original, commands, frame),
+    );
     renderImage();
+  }
+
+  /** Bounding box of a redaction, for highlighting it. */
+  function commandBounds(cmd: RedactionCommand) {
+    if (cmd.region) return cmd.region;
+    if (!cmd.points || cmd.points.length < 2) return null;
+    const pad = (cmd.brushSize || 20) / 2;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i + 1 < cmd.points.length; i += 2) {
+      minX = Math.min(minX, cmd.points[i]);
+      maxX = Math.max(maxX, cmd.points[i]);
+      minY = Math.min(minY, cmd.points[i + 1]);
+      maxY = Math.max(maxY, cmd.points[i + 1]);
+    }
+    return {
+      x: minX - pad,
+      y: minY - pad,
+      width: maxX - minX + pad * 2,
+      height: maxY - minY + pad * 2,
+    };
   }
 
   function renderImage() {
@@ -219,6 +252,33 @@
       }
     }
 
+    // Outline the redaction selected in the frame timeline
+    const selected = $selectedRedactionId
+      ? $activeCommands.find((c) => c.id === $selectedRedactionId)
+      : null;
+    const bounds = selected ? commandBounds(selected) : null;
+    if (bounds) {
+      const gap = 3 / effectiveScale;
+      overlayCtx.lineWidth = 2 / effectiveScale;
+      overlayCtx.setLineDash([6 / effectiveScale, 4 / effectiveScale]);
+      overlayCtx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      overlayCtx.strokeRect(
+        bounds.x - gap,
+        bounds.y - gap,
+        bounds.width + gap * 2,
+        bounds.height + gap * 2,
+      );
+      overlayCtx.lineDashOffset = 5 / effectiveScale;
+      overlayCtx.strokeStyle = "rgba(99, 102, 241, 0.95)";
+      overlayCtx.strokeRect(
+        bounds.x - gap,
+        bounds.y - gap,
+        bounds.width + gap * 2,
+        bounds.height + gap * 2,
+      );
+      overlayCtx.lineDashOffset = 0;
+    }
+
     // Draw selection rectangle
     if (selectionStart && selectionEnd && $settingsStore.tool === "rect") {
       const x = Math.min(selectionStart.x, selectionEnd.x);
@@ -252,8 +312,11 @@
     }
   }
 
-  // Re-render overlay when detection results change
-  $: if ($detectionStore.results && overlayCtx) {
+  // Re-render overlay when detection results or the highlighted redaction change
+  $: if (
+    ($detectionStore.results || $selectedRedactionId || $activeCommands) &&
+    overlayCtx
+  ) {
     renderOverlay();
   }
 
@@ -390,6 +453,9 @@
       }
     }
 
+    // Hold the animation still so the redaction lands on the frame it was drawn on
+    documentStore.pause();
+
     if ($settingsStore.tool === "rect") {
       isSelecting = true;
       selectionStart = coords;
@@ -487,6 +553,9 @@
 
     e.preventDefault(); // Prevent scrolling while drawing
     const coords = getTouchCoords(e);
+
+    // Hold the animation still so the redaction lands on the frame it was drawn on
+    documentStore.pause();
 
     if ($settingsStore.tool === "rect") {
       isSelecting = true;
@@ -606,6 +675,7 @@
       points: null,
       intensity: $settingsStore.intensity,
       color: $settingsStore.fillColor,
+      frames: documentStore.newRedactionFrames(),
     });
   }
 
@@ -635,6 +705,7 @@
       brushSize: $settingsStore.brushSize,
       intensity: $settingsStore.intensity,
       color: $settingsStore.fillColor,
+      frames: documentStore.newRedactionFrames(),
     });
   }
 </script>

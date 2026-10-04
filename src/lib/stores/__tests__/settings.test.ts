@@ -19,6 +19,16 @@ describe('settingsStore', () => {
       expect(state.intensity).toBe(50);
       expect(state.brushSize).toBe(20);
       expect(state.fillColor).toBe('#000000');
+      expect(state.frameScope).toBe('all');
+    });
+  });
+
+  describe('setFrameScope', () => {
+    it('should switch new redactions to the current frame and back', () => {
+      settingsStore.setFrameScope('current');
+      expect(get(settingsStore).frameScope).toBe('current');
+      settingsStore.setFrameScope('all');
+      expect(get(settingsStore).frameScope).toBe('all');
     });
   });
 

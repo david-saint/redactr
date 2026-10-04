@@ -2,7 +2,7 @@
   import { settingsStore, type Tool, type RedactionStyle } from '../stores/settings';
   import { imageStore } from '../stores/image';
   import { historyStore, canUndo, canRedo } from '../stores/history';
-  import { documentStore, isPdf } from '../stores/document';
+  import { documentStore, isPdf, isGif } from '../stores/document';
   import { downloadBlob, redactedFileName } from '../download';
 
   let styleExpanded = $state(false);
@@ -32,13 +32,16 @@
   }
 
   async function handleExport() {
-    if ($isPdf) {
+    if ($isPdf || $isGif) {
+      const format = $isPdf ? 'pdf' : 'gif';
       exporting = true;
       try {
-        const blob = await documentStore.exportPdf();
-        downloadBlob(blob, redactedFileName($imageStore.name, 'pdf'));
+        const blob = $isPdf
+          ? await documentStore.exportPdf()
+          : await documentStore.exportGif();
+        downloadBlob(blob, redactedFileName($imageStore.name, format));
       } catch (e) {
-        console.error('Failed to export PDF:', e);
+        console.error(`Failed to export ${format.toUpperCase()}:`, e);
       } finally {
         exporting = false;
       }
@@ -256,7 +259,7 @@
       </button>
     </div>
 
-    <button class="export-btn" onclick={handleExport} disabled={exporting} aria-label={$isPdf ? 'Export PDF' : 'Export'}>
+    <button class="export-btn" onclick={handleExport} disabled={exporting} aria-label={$isPdf ? 'Export PDF' : $isGif ? 'Export GIF' : 'Export'}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
         <polyline points="7 10 12 15 17 10"/>
