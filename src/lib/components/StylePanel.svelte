@@ -1,7 +1,7 @@
 <script lang="ts">
   import { settingsStore, type RedactionStyle } from '../stores/settings';
   import { imageStore } from '../stores/image';
-  import { documentStore, isPdf, isGif } from '../stores/document';
+  import { documentStore, isPdf, isGif, trackingStatus } from '../stores/document';
   import { downloadBlob, redactedFileName } from '../download';
   import { GifJobCancelled } from '../gif';
 
@@ -88,7 +88,9 @@
 
   async function handleExportGif() {
     exporting = true;
-    exportProgress = '';
+    // Export waits for redactions still being tracked.
+    exportProgress =
+      $trackingStatus.running || $trackingStatus.queued.length ? 'tracking' : '';
 
     try {
       const blob = await documentStore.exportGif((done, total) => {
@@ -237,7 +239,11 @@
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
-        {exportProgress ? `Exporting ${exportProgress}` : 'Animated GIF'}
+        {exportProgress === 'tracking'
+          ? 'Finishing tracking…'
+          : exportProgress
+            ? `Exporting ${exportProgress}`
+            : 'Animated GIF'}
       </button>
       <p class="export-note">
         Every frame is re-encoded, so comments and other metadata are removed.

@@ -22,10 +22,18 @@ export interface RedactionTrack {
   anchor: Box;
   /** Boxes placed by hand, which tracking starts from. */
   keyframes: { frame: number; box: Box }[];
-  /** Where the anchor sits on each frame; null where the redaction isn't shown. */
+  /**
+   * Where the anchor sits on each frame; null where the redaction isn't
+   * shown. Empty until tracking first succeeds: the redaction then stays
+   * where it was drawn, on every frame it covers.
+   */
   boxes: (Box | null)[];
   /** Match quality per frame: 1 for keyframes, 0 where the position was estimated. */
   scores: number[];
+  /** Tracking was asked for and hasn't finished; filled in place when it does. */
+  pending?: boolean;
+  /** Why the last tracking attempt didn't finish. */
+  failure?: string;
 }
 
 export interface RedactionCommand {
@@ -124,10 +132,35 @@ function createHistoryStore() {
      * Make an active redaction follow moving content (or stop, with null),
      * shown on `frames`, as an undoable step.
      */
-    setTrack: (id: string, track: RedactionTrack | null, frames: FrameRange | null) => {
+    setTrack: (
+      id: string,
+      track: RedactionTrack | null,
+      frames: FrameRange | null
+    ): RedactionCommand | undefined => {
       const target = activeVersion(id);
-      if (!target) return;
-      append({ ...target, track, frames, timestamp: Date.now() });
+      if (!target) return undefined;
+      const version = { ...target, track, frames, timestamp: Date.now() };
+      append(version);
+      return version;
+    },
+    /**
+     * Rewrite `from` and the later versions of the same redaction in place,
+     * without adding an undo step or touching the redo stack: for results of
+     * background work (tracking) started from `from`. Returns false if `from`
+     * is no longer in the history.
+     */
+    patchVersions: (
+      from: RedactionCommand,
+      patch: (version: RedactionCommand) => RedactionCommand
+    ): boolean => {
+      const state = get({ subscribe });
+      const start = state.commands.indexOf(from);
+      if (start < 0) return false;
+      const commands = state.commands.map((c, i) =>
+        i >= start && c.id === from.id ? patch(c) : c
+      );
+      set({ ...state, commands, version: state.version + 1 });
+      return true;
     },
     /**
      * Change which frames an active redaction applies to, as an undoable step.

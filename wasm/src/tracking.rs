@@ -22,8 +22,6 @@ const MAX_SCORE_DROP: f32 = 0.2;
 /// Stop after this many lost frames in a row; the box holds its course
 /// through shorter dips (e.g. the cursor passing over the text).
 const MAX_MISSES: usize = 6;
-/// Stop once less than this fraction of the box is inside the frame.
-const MIN_VISIBLE: f64 = 0.2;
 /// Candidates must overlap the frame by at least this fraction of the template.
 const MIN_OVERLAP: f64 = 0.3;
 /// Search radius (full-size pixels) around the predicted position.
@@ -327,8 +325,9 @@ fn ncc(frame: &Luma, template: &Luma, x0: i64, y0: i64) -> Option<f32> {
     Some(((stf - st * sf / n) / (vt * vf).sqrt()) as f32)
 }
 
-/// A frame prepared for matching: its pixels plus summed-area tables of the
-/// values and their squares, so any window's mean and variance cost O(1).
+/// A frame prepared for matching: its pixels plus running sums along each
+/// row of the values and their squares, so a window's mean and variance
+/// cost one lookup per row compared.
 struct Field {
     img: Luma,
     sum: Vec<f64>,
@@ -338,45 +337,62 @@ struct Field {
 impl Field {
     fn new(img: Luma) -> Field {
         let (w, h) = (img.width, img.height);
-        let mut sum = vec![0.0; (w + 1) * (h + 1)];
-        let mut sum2 = vec![0.0; (w + 1) * (h + 1)];
+        let mut sum = vec![0.0; (w + 1) * h];
+        let mut sum2 = vec![0.0; (w + 1) * h];
         for y in 0..h {
-            let (mut row, mut row2) = (0.0, 0.0);
             for x in 0..w {
                 let v = img.data[y * w + x] as f64;
-                row += v;
-                row2 += v * v;
-                let i = (y + 1) * (w + 1) + x + 1;
-                sum[i] = sum[i - (w + 1)] + row;
-                sum2[i] = sum2[i - (w + 1)] + row2;
+                let i = y * (w + 1) + x;
+                sum[i + 1] = sum[i] + v;
+                sum2[i + 1] = sum2[i] + v * v;
             }
         }
         Field { img, sum, sum2 }
     }
 
-    /// Sum and sum of squares of a window lying inside the image.
-    fn window(&self, x: usize, y: usize, w: usize, h: usize) -> (f64, f64) {
+    /// Sum and sum of squares of every `step`th row of a window lying inside
+    /// the image.
+    fn window(&self, x: usize, y: usize, w: usize, h: usize, step: usize) -> (f64, f64) {
         let stride = self.img.width + 1;
-        let at = |t: &[f64]| {
-            t[(y + h) * stride + x + w] - t[y * stride + x + w] - t[(y + h) * stride + x]
-                + t[y * stride + x]
-        };
-        (at(&self.sum), at(&self.sum2))
+        let (mut s, mut s2) = (0.0, 0.0);
+        for row in (y..y + h).step_by(step) {
+            let (a, b) = (row * stride + x, row * stride + x + w);
+            s += self.sum[b] - self.sum[a];
+            s2 += self.sum2[b] - self.sum2[a];
+        }
+        (s, s2)
     }
 }
 
-/// A template with its sums precomputed.
+/// A template with its sums precomputed. Tall templates are compared on
+/// every `step`th row only: alignment stays exact (no resampling), at a
+/// fraction of the cost.
 struct Template {
     img: Luma,
+    step: usize,
     sum: f64,
     sum2: f64,
 }
 
+/// Rows compared from tall templates.
+const TEMPLATE_ROWS: usize = 32;
+
 impl Template {
     fn new(img: Luma) -> Template {
-        let sum = img.data.iter().map(|&v| v as f64).sum();
-        let sum2 = img.data.iter().map(|&v| (v as f64) * (v as f64)).sum();
-        Template { img, sum, sum2 }
+        let step = (img.height / TEMPLATE_ROWS).max(1);
+        let (mut sum, mut sum2) = (0.0, 0.0);
+        for row in (0..img.height).step_by(step) {
+            for &v in &img.data[row * img.width..(row + 1) * img.width] {
+                sum += v as f64;
+                sum2 += (v as f64) * (v as f64);
+            }
+        }
+        Template {
+            img,
+            step,
+            sum,
+            sum2,
+        }
     }
 }
 
@@ -392,12 +408,12 @@ fn score(field: &Field, t: &Template, x0: i64, y0: i64) -> Option<f32> {
         return ncc(&field.img, &t.img, x0, y0);
     }
     let (x0, y0) = (x0 as usize, y0 as usize);
-    let n = (tw * th) as f64;
-    let (sf, sff) = field.window(x0, y0, tw, th);
+    let n = (tw * th.div_ceil(t.step)) as f64;
+    let (sf, sff) = field.window(x0, y0, tw, th, t.step);
 
     // The only per-pixel work: the cross term, in four lanes.
     let mut acc = [0.0f32; 4];
-    for ty in 0..th {
+    for ty in (0..th).step_by(t.step) {
         let t_row = &t.img.data[ty * tw..(ty + 1) * tw];
         let f_start = (y0 + ty) * field.img.width + x0;
         let f_row = &field.img.data[f_start..f_start + tw];
@@ -558,9 +574,24 @@ fn search(
     let mut best: Option<Match> = None;
     let same =
         same_scale_best.filter(|c| coarse_best.is_none_or(|b| (b.1, b.2, b.3) != (c.1, c.2, c.3)));
-    for (_, coarse_scale, bx, by) in [coarse_best, same].into_iter().flatten() {
-        let (cw, ch) = (anchor.w * coarse_scale, anchor.h * coarse_scale);
-        let center = (bx as f64 * d + cw / 2.0, by as f64 * d + ch / 2.0);
+    let to_center = |(_, s, bx, by): (f32, f64, i64, i64)| {
+        (
+            s,
+            (
+                bx as f64 * d + anchor.w * s / 2.0,
+                by as f64 * d + anchor.h * s / 2.0,
+            ),
+        )
+    };
+    // Also where the motion predicts it: shrunk frames can miss content that
+    // moved by a fraction of the shrink factor, especially fine textures.
+    let predicted = (scale, center);
+    let candidates = [
+        coarse_best.map(to_center),
+        same.map(to_center),
+        Some(predicted),
+    ];
+    for (coarse_scale, center) in candidates.into_iter().flatten() {
         let refined = refine(
             frame,
             refine_on,
@@ -720,12 +751,15 @@ pub fn track(
     let mut median = anchor_patch.clone();
 
     // How far to shrink frames for the coarse search: enough to keep the
-    // template small at the size the box was drawn (but at least 3px thick,
-    // and at most 4x, which thin text survives), times the zoom since then.
+    // template small at the size the box was drawn (but at least 3px thick;
+    // at most 4x for thin boxes, which thin text survives, more for big ones
+    // so they stay quick), times the zoom since then.
+    let min_side = anchor.w.min(anchor.h);
+    let cap = ((min_side / 24.0).floor() as usize).clamp(4, 8);
     let base_factor = ((anchor.w * anchor.h / 400.0).sqrt().ceil() as usize)
-        .min((anchor.w.min(anchor.h) / 3.0).floor().max(1.0) as usize)
-        .clamp(1, 4);
-    let coarse_factor = |scale: f64| (base_factor * (scale.round() as usize).max(1)).min(16);
+        .min((min_side / 3.0).floor().max(1.0) as usize)
+        .clamp(1, cap);
+    let coarse_factor = |scale: f64| (base_factor * (scale.round() as usize).max(1)).min(32);
 
     let mut steps = Vec::new();
     let mut prev = Match {
@@ -747,19 +781,32 @@ pub fn track(
         let raw = frame_at(frame_index)?;
         let factor = coarse_factor(prev.scale);
         let (pcx, pcy) = prev.rect.center();
-        let predicted = (pcx + velocity.0, pcy + velocity.1);
+        let width_height = (raw.width, raw.height);
+        let prev_visible = prev.rect.visible_fraction(width_height.0, width_height.1);
+        let mut predicted = (pcx + velocity.0, pcy + velocity.1);
         let speed = (velocity.0 * velocity.0 + velocity.1 * velocity.1).sqrt();
         let (w, h) = (prev.rect.w, prev.rect.h);
-        let course = Rect {
+        let mut course = Rect {
             x: predicted.0 - w / 2.0,
             y: predicted.1 - h / 2.0,
             w,
             h,
         };
-        // Moving out of the frame: stop rather than look for a stand-in.
-        if course.visible_fraction(raw.width, raw.height) < MIN_VISIBLE {
-            break;
+        if course.visible_fraction(width_height.0, width_height.1) == 0.0 {
+            if prev_visible < 1.0 {
+                // It was already leaving and is now gone.
+                break;
+            }
+            // Fully in view a frame ago: the motion estimate is off, not the
+            // content gone. Look where it was.
+            velocity = (0.0, 0.0);
+            predicted = (pcx, pcy);
+            course = prev.rect;
         }
+        // Partly out and moving further out: misses here are the content
+        // leaving, not being lost, so the box keeps covering what's left.
+        let leaving =
+            course.visible_fraction(width_height.0, width_height.1) < prev_visible.min(1.0);
 
         // The median adds nothing until other patches have been matched.
         let both = [&anchor_patch, &median];
@@ -824,7 +871,9 @@ pub fn track(
             _ => {
                 // Hold the course so the box keeps covering where the content
                 // is most likely to be.
-                misses += 1;
+                if !leaving {
+                    misses += 1;
+                }
                 prev = Match {
                     rect: course,
                     scale: prev.scale,
@@ -840,7 +889,9 @@ pub fn track(
             score: prev.score,
         });
         progress(done + 1);
-        if misses >= MAX_MISSES || prev.rect.visible_fraction(raw.width, raw.height) < MIN_VISIBLE {
+        // Stop when lost for a while, or once the box is entirely outside the
+        // frame (until then it covers whatever part is still showing).
+        if misses >= MAX_MISSES || prev.rect.visible_fraction(raw.width, raw.height) == 0.0 {
             break;
         }
     }
@@ -1058,14 +1109,67 @@ mod tests {
         )
         .unwrap();
 
-        let last = steps.last().unwrap();
-        assert!(
-            last.frame < 6,
-            "kept going after the content left: {last:?}"
-        );
-        // While partly visible the box still follows it.
-        for s in &steps {
-            assert_close(s.rect, project(target, view(s.frame), 240), 1.5);
+        // A box on every frame while any of the content shows, following it.
+        let visible = |i: usize| project(target, view(i), 240).visible_fraction(240, 160) > 0.0;
+        for i in 1..20 {
+            if visible(i) {
+                let step = steps
+                    .iter()
+                    .find(|s| s.frame == i)
+                    .expect("frame with content has a box");
+                assert_close(step.rect, project(target, view(i), 240), 1.5);
+            }
+        }
+        // ...and it stops soon after the content is gone.
+        let gone = (1..20).find(|&i| !visible(i)).unwrap();
+        assert!(steps.last().unwrap().frame <= gone, "{:?}", steps.last());
+    }
+
+    #[test]
+    fn covers_a_wide_box_slowly_leaving_the_frame() {
+        let world = scene(500);
+        let target = Rect {
+            x: 120.0,
+            y: 150.0,
+            w: 200.0,
+            h: 16.0,
+        };
+        // Pans right 6px a frame, so the target slides out to the left.
+        let view = |i: usize| Rect {
+            x: 60.0 + i as f64 * 6.0,
+            y: 80.0,
+            w: 240.0,
+            h: 160.0,
+        };
+        let frames: Vec<Luma> = (0..60).map(|i| shot(&world, view(i), 240, 160)).collect();
+
+        let steps = track(
+            |i| Ok(frames[i].clone()),
+            0,
+            project(target, view(0), 240),
+            59,
+            |_| {},
+        )
+        .unwrap();
+
+        for i in 1..60 {
+            let truth = project(target, view(i), 240);
+            if truth.visible_fraction(240, 160) == 0.0 {
+                break;
+            }
+            let step = steps
+                .iter()
+                .find(|s| s.frame == i)
+                .unwrap_or_else(|| panic!("no box on frame {i} with {truth:?} visible"));
+            // The visible part of the content is inside the box.
+            assert!(
+                step.rect.x + step.rect.w >= truth.x + truth.w - 1.5,
+                "{step:?} vs {truth:?}"
+            );
+            assert!(
+                (step.rect.y - truth.y).abs() <= 1.5,
+                "{step:?} vs {truth:?}"
+            );
         }
     }
 

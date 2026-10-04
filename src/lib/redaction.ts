@@ -1,4 +1,4 @@
-import type { Box, RedactionCommand } from './stores/history';
+import type { Box, FrameRange, RedactionCommand } from './stores/history';
 import { applyRectRedaction, applyBrushRedaction } from './wasm/redactor';
 
 /**
@@ -11,7 +11,22 @@ export const TRACK_PADDING = 3;
 export function appliesToFrame(command: RedactionCommand, frame: number): boolean {
   const range = command.frames;
   if (range && (frame < range.start || frame > range.end)) return false;
-  return !command.track || !!command.track.boxes[frame];
+  return !isTracked(command) || !!command.track!.boxes[frame];
+}
+
+/** Whether a redaction has tracking results to place it by. */
+export function isTracked(command: RedactionCommand): boolean {
+  return !!command.track && command.track.boxes.length > 0;
+}
+
+/** The first and last frames a tracked redaction has a box on. */
+export function trackedSpan(command: RedactionCommand): FrameRange | null {
+  const boxes = command.track?.boxes ?? [];
+  const first = boxes.findIndex(Boolean);
+  if (first < 0) return null;
+  let last = boxes.length - 1;
+  while (!boxes[last]) last--;
+  return { start: first, end: last };
 }
 
 /** The box around a redaction's shape: its region, or its brush stroke. */
@@ -43,8 +58,9 @@ export function placeOnFrame(
   frame: number
 ): RedactionCommand | null {
   if (!appliesToFrame(cmd, frame)) return null;
-  const track = cmd.track;
-  if (!track) return cmd;
+  // Not tracked (yet, or tracking failed): it stays where it was drawn.
+  if (!isTracked(cmd)) return cmd;
+  const track = cmd.track!;
 
   const box = track.boxes[frame]!;
   const { anchor } = track;
@@ -52,8 +68,10 @@ export function placeOnFrame(
   const sy = box.height / anchor.height;
   const mapX = (x: number) => box.x + (x - anchor.x) * sx;
   const mapY = (y: number) => box.y + (y - anchor.y) * sy;
-  const padX = TRACK_PADDING * sx;
-  const padY = TRACK_PADDING * sy;
+  // Tracking errors are in frame pixels, so the padding never drops below
+  // TRACK_PADDING frame pixels when the content has shrunk.
+  const padX = TRACK_PADDING * Math.max(sx, 1);
+  const padY = TRACK_PADDING * Math.max(sy, 1);
 
   if (cmd.region) {
     const { x, y, width, height } = cmd.region;
@@ -70,7 +88,7 @@ export function placeOnFrame(
   return {
     ...cmd,
     points: cmd.points?.map((v, i) => (i % 2 === 0 ? mapX(v) : mapY(v))) ?? null,
-    brushSize: (cmd.brushSize || 20) * Math.max(sx, sy) + TRACK_PADDING * 2 * Math.max(sx, sy)
+    brushSize: (cmd.brushSize || 20) * Math.max(sx, sy) + TRACK_PADDING * 2 * Math.max(sx, sy, 1)
   };
 }
 

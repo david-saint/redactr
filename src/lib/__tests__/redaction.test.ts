@@ -15,7 +15,14 @@ vi.mock('../wasm/redactor', () => ({
   })
 }));
 
-import { replayCommands, appliesToFrame, placeOnFrame, commandBounds, TRACK_PADDING } from '../redaction';
+import {
+  replayCommands,
+  appliesToFrame,
+  placeOnFrame,
+  commandBounds,
+  trackedSpan,
+  TRACK_PADDING
+} from '../redaction';
 
 const rect = (x: number, frames = null) => ({
   id: `r${x}`,
@@ -141,5 +148,33 @@ describe('tracked redactions', () => {
       width: 16,
       height: 26
     });
+  });
+
+  it('should stay where it was drawn until tracking has results', () => {
+    const pending = { ...tracked, track: { ...tracked.track, boxes: [], scores: [], pending: true } };
+    expect([0, 1, 2].map((f) => appliesToFrame(pending, f))).toEqual([true, true, true]);
+    expect(placeOnFrame(pending, 2)).toBe(pending);
+    const failed = { ...pending, track: { ...pending.track, pending: false, failure: 'lost' } };
+    expect(placeOnFrame(failed, 1)).toBe(failed);
+  });
+
+  it('should keep at least the padding in frame pixels when content shrinks', () => {
+    const shrunk = {
+      ...tracked,
+      track: track([{ x: 0, y: 0, width: 20, height: 5 }])
+    };
+    // Half size: the shape scales, the padding doesn't drop below TRACK_PADDING.
+    expect(placeOnFrame(shrunk, 0).region).toEqual({
+      x: -TRACK_PADDING,
+      y: -TRACK_PADDING,
+      width: 20 + 2 * TRACK_PADDING,
+      height: 5 + 2 * TRACK_PADDING
+    });
+  });
+
+  it('should find the frames a track has boxes on', () => {
+    expect(trackedSpan(tracked)).toEqual({ start: 0, end: 1 });
+    expect(trackedSpan({ ...tracked, track: track([null, null]) })).toBe(null);
+    expect(trackedSpan(rect(1))).toBe(null);
   });
 });

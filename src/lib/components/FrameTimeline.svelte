@@ -16,7 +16,7 @@
     type RedactionCommand
   } from '../stores/history';
   import { thumbnailFrames } from '../gifJobs';
-  import { placeOnFrame } from '../redaction';
+  import { appliesToFrame, isTracked, placeOnFrame, trackedSpan } from '../redaction';
   import type { FrameThumbnail } from '../gif';
   import { settingsStore, type FrameScope } from '../stores/settings';
   import { detectionStore } from '../stores/detection';
@@ -45,9 +45,15 @@
     boxPlacement.set(null);
   });
 
-  // Placing a box is for the selected redaction; selecting another cancels it.
+  // Placing a box is for the selected redaction with the rectangle tool;
+  // selecting another redaction or tool cancels it.
   $effect(() => {
-    if ($boxPlacement && $boxPlacement !== $selectedRedactionId) boxPlacement.set(null);
+    if (
+      $boxPlacement &&
+      ($boxPlacement !== $selectedRedactionId || $settingsStore.tool !== 'rect')
+    ) {
+      boxPlacement.set(null);
+    }
   });
 
   /**
@@ -62,6 +68,8 @@
     originFrame: number;
     initial: FrameRange;
     range: FrameRange;
+    /** How far the range may go. */
+    limits: FrameRange;
     moved: boolean;
   }
   let drag = $state<Drag | null>(null);
@@ -167,9 +175,17 @@
     boxPlacement.set($boxPlacement === id ? null : id);
   }
 
-  function rangeOf(cmd: RedactionCommand) {
-    return cmd.frames ?? { start: 0, end: frameCount - 1 };
+  /** The frames a redaction's range may span: a tracked one only has boxes on some. */
+  function limitsOf(cmd: RedactionCommand) {
+    return (isTracked(cmd) && trackedSpan(cmd)) || { start: 0, end: frameCount - 1 };
   }
+
+  function rangeOf(cmd: RedactionCommand) {
+    return cmd.frames ?? limitsOf(cmd);
+  }
+
+  /** Redactions whose last tracking attempt failed, for a notice. */
+  let failed = $derived($activeCommands.filter(c => c.track?.failure && !c.track.pending));
 
   function label(cmd: RedactionCommand, index: number) {
     return `${cmd.type === 'rect' ? 'Box' : 'Brush'} ${index + 1}`;
@@ -241,10 +257,15 @@
   }
 
   function setRangeFor(id: string, start: number, end: number) {
-    start = clampFrame(start);
-    end = clampFrame(end);
+    const cmd = $activeCommands.find(c => c.id === id);
+    if (!cmd) return;
+    // A tracked redaction can't be shown where tracking found no box.
+    const limits = limitsOf(cmd);
+    const clamp = (f: number) => Math.min(limits.end, Math.max(limits.start, Math.round(f)));
+    start = clamp(start);
+    end = clamp(end);
     if (start > end) [start, end] = [end, start];
-    const everyFrame = start === 0 && end === frameCount - 1;
+    const everyFrame = start === limits.start && end === limits.end;
     historyStore.setFrames(id, everyFrame ? null : { start, end });
   }
 
@@ -256,7 +277,9 @@
     if (e.button !== 0 || drag) return;
     const el = e.currentTarget as HTMLElement;
     const handle = (e.target as HTMLElement).closest<HTMLElement>('[data-drag]');
-    const mode = (cmd && (handle?.dataset.drag as DragMode)) || 'seek';
+    let mode = (cmd && (handle?.dataset.drag as DragMode)) || 'seek';
+    // A tracked redaction's boxes belong to their frames; it can't be slid.
+    if (mode === 'move' && cmd && isTracked(cmd)) mode = 'seek';
     const frame = frameAt(e, el);
     const initial = cmd ? rangeOf(cmd) : { start: 0, end: frameCount - 1 };
 
@@ -272,6 +295,7 @@
       originFrame: frame,
       initial,
       range: initial,
+      limits: cmd ? limitsOf(cmd) : { start: 0, end: frameCount - 1 },
       moved: false
     };
     if (mode === 'seek') seek(frame);
@@ -286,11 +310,11 @@
     if (drag.mode === 'seek') {
       seek(frame);
     } else if (drag.mode === 'start') {
-      const start = Math.min(boundaryAt(e, el), initial.end);
+      const start = Math.max(drag.limits.start, Math.min(boundaryAt(e, el), initial.end));
       drag.range = { start, end: initial.end };
       seek(start);
     } else if (drag.mode === 'end') {
-      const end = Math.max(boundaryAt(e, el) - 1, initial.start);
+      const end = Math.min(drag.limits.end, Math.max(boundaryAt(e, el) - 1, initial.start));
       drag.range = { start: initial.start, end };
       seek(end);
     } else {
@@ -335,8 +359,8 @@
     };
     let next: number;
     if (e.key in steps) next = value + steps[e.key];
-    else if (e.key === 'Home') next = edge === 'start' ? 0 : range.start;
-    else if (e.key === 'End') next = edge === 'end' ? frameCount - 1 : range.end;
+    else if (e.key === 'Home') next = edge === 'start' ? limitsOf(cmd).start : range.start;
+    else if (e.key === 'End') next = edge === 'end' ? limitsOf(cmd).end : range.end;
     else return;
 
     e.preventDefault();
@@ -496,6 +520,13 @@
           : 'New ones cover only the frame on screen.'}
     </p>
   {:else}
+    {#each failed.filter(c => c.id !== $selectedRedactionId) as cmd (cmd.id)}
+      <p class="follow-notice" role="alert">
+        Couldn't follow {label(cmd, $activeCommands.indexOf(cmd))}: {cmd.track?.failure}. It covers
+        where it was drawn.
+        <button onclick={() => selectedRedactionId.set(cmd.id)}>Show</button>
+      </p>
+    {/each}
     <div class="tracks">
       {#each $activeCommands as cmd, i (cmd.id)}
         {@const range = shownRange(cmd)}
@@ -609,14 +640,15 @@
             Following {label(selected, selectedIndex)}…
             {run.total ? `${run.done}/${run.total} frames` : ''}
           </span>
-          <button onclick={() => documentStore.cancelTracking()}>Cancel</button>
+          <button onclick={() => documentStore.cancelTracking(selected.id)}>Cancel</button>
         {:else if $trackingStatus.queued.includes(selected.id)}
           <span class="follow-status">Waiting to follow…</span>
-          <button onclick={() => documentStore.cancelTracking()}>Cancel</button>
-        {:else if selected.track}
+          <button onclick={() => documentStore.cancelTracking(selected.id)}>Cancel</button>
+        {:else if isTracked(selected)}
           {@const marks = trackMarks(selected)}
+          {@const span = trackedSpan(selected)}
           <span class="follow-status">
-            Follows its content{marks.weak.length
+            Follows its content on frames {span ? `${span.start + 1}–${span.end + 1}` : ''}{marks.weak.length
               ? ` · ${marks.weak.reduce((n, w) => n + w.end - w.start + 1, 0)} frames to check`
               : ''}
           </span>
@@ -629,13 +661,36 @@
           </button>
           <button onclick={() => documentStore.trackRedaction(selected.id)}>Re-track</button>
           <button onclick={() => documentStore.untrack(selected.id)}>Stop following</button>
+          {#if span && (span.start > 0 || span.end < frameCount - 1)}
+            <span class="follow-note">
+              Lost the content beyond these frames; check them, and fix the box where it
+              reappears.
+            </span>
+          {/if}
         {:else}
-          <button onclick={() => documentStore.trackRedaction(selected.id)}>
-            Follow content from this frame
+          {#if selected.track?.failure}
+            <span class="follow-error" role="alert">
+              Couldn't follow: {selected.track.failure}. It covers where it was drawn.
+            </span>
+          {/if}
+          <button
+            onclick={() => documentStore.trackRedaction(selected.id)}
+            disabled={!appliesToFrame(selected, current)}
+            title={appliesToFrame(selected, current)
+              ? undefined
+              : 'Go to a frame this redaction covers'}
+          >
+            {selected.track?.failure ? 'Try again from this frame' : 'Follow content from this frame'}
           </button>
-        {/if}
-        {#if $trackingStatus.error?.id === selected.id}
-          <span class="follow-error" role="alert">{$trackingStatus.error.message}</span>
+          {#if selected.track?.failure}
+            <button
+              class:active={$boxPlacement === selected.id}
+              aria-pressed={$boxPlacement === selected.id}
+              onclick={() => startPlacement(selected.id)}
+            >
+              Place box on this frame
+            </button>
+          {/if}
         {/if}
       </div>
       {#if $boxPlacement === selected.id}
@@ -873,6 +928,28 @@
 
   .follow-error {
     color: var(--danger);
+  }
+
+  .follow-note {
+    color: var(--text-secondary);
+  }
+
+  .follow-notice {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    color: var(--danger);
+    background: var(--danger-subtle);
+  }
+
+  .follow-notice button {
+    padding: 0 var(--space-2);
+    font-size: 0.75rem;
   }
 
   .placement-hint {
